@@ -33,6 +33,7 @@ DEFAULT_CHECKPOINT_DIR = DEFAULT_OPENPI_ROOT / "checkpoints/pi05-b1kpt50-cs32"
 DEFAULT_OUTPUT_ROOT = WORKSPACE_ROOT / "a2c2_dataset/tidying_bedroom_pi05-b1kpt50-cs32_h32_v1"
 DEFAULT_CONFIG_NAME = "pi05_b1k-base"
 DEFAULT_TASK_NAME = "tidying_bedroom"
+DEFAULT_VARIANT_SUFFIX = "pi05-b1kpt50-cs32_h32_v1"
 DEFAULT_LATENT_COLUMN = "a2c2.base_policy_z"
 PROGRESS_DIRNAME = "a2c2_progress"
 
@@ -168,14 +169,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-root", type=Path, default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--openpi-root", type=Path, default=DEFAULT_OPENPI_ROOT)
     parser.add_argument("--checkpoint-dir", type=Path, default=DEFAULT_CHECKPOINT_DIR)
-    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=None,
+        help="Output dataset root. Defaults to ./a2c2_dataset/<task-name>_pi05-b1kpt50-cs32_h32_v1.",
+    )
     parser.add_argument("--config-name", default=DEFAULT_CONFIG_NAME)
-    parser.add_argument("--task-name", default=DEFAULT_TASK_NAME)
+    parser.add_argument(
+        "--task-name",
+        default=None,
+        help=f"BEHAVIOR task name. Defaults to {DEFAULT_TASK_NAME!r} unless --task-index is set.",
+    )
+    parser.add_argument("--task-index", type=int, default=None, help="BEHAVIOR task index, e.g. 1 for task-0001.")
     parser.add_argument("--action-horizon", type=int, default=32)
     parser.add_argument("--action-dim", type=int, default=23)
     parser.add_argument("--model-action-dim", type=int, default=32)
     parser.add_argument("--latent-column", default=DEFAULT_LATENT_COLUMN)
-    parser.add_argument("--latent-batch-size", type=int, default=8)
+    parser.add_argument(
+        "--latent-batch-size",
+        type=int,
+        default=8,
+        help="Batch size for latent extraction and fused action+latent inference.",
+    )
     parser.add_argument("--mock-latent-dim", type=int, default=2048)
     parser.add_argument("--cache-seed", type=int, default=42)
     parser.add_argument(
@@ -215,6 +231,10 @@ def parse_args() -> argparse.Namespace:
         raise ValueError("--mock-latent-dim must be positive.")
     if args.max_workers <= 0:
         raise ValueError("--max-workers must be positive.")
+    if args.task_index is not None and args.task_index < 0:
+        raise ValueError("--task-index must be non-negative.")
+    if args.task_name is None and args.task_index is None:
+        args.task_name = DEFAULT_TASK_NAME
     return args
 
 
@@ -315,16 +335,41 @@ def atomic_symlink(target: Path, link_path: Path) -> None:
     os.symlink(target, link_path, target_is_directory=target.is_dir())
 
 
-def get_task_info(source_root: Path, task_name: str) -> TaskInfo:
+def sanitize_variant_component(value: str) -> str:
+    return "".join(char if char.isalnum() else "_" for char in value.lower()).strip("_")
+
+
+def default_output_root_for_task(task_name: str) -> Path:
+    return WORKSPACE_ROOT / "a2c2_dataset" / f"{sanitize_variant_component(task_name)}_{DEFAULT_VARIANT_SUFFIX}"
+
+
+def get_task_info(source_root: Path, task_name: str | None, task_index: int | None) -> TaskInfo:
     for record in load_jsonl(source_root / "meta/tasks.jsonl"):
-        if record["task_name"] == task_name:
-            return TaskInfo(
-                task_index=int(record["task_index"]),
-                task_name=record["task_name"],
-                task_prompt=record["task"],
-                raw_task_record=record,
-            )
-    raise ValueError(f"Task {task_name!r} not found in {source_root / 'meta/tasks.jsonl'}")
+        record_task_index = int(record["task_index"])
+        if task_index is not None and record_task_index != task_index:
+            continue
+        if task_name is not None and record["task_name"] != task_name:
+            continue
+        if task_index is not None and task_name is not None:
+            print(f"Selected task {record_task_index:04d}: {record['task_name']}")
+        elif task_index is not None:
+            print(f"Selected task {record_task_index:04d}: {record['task_name']} (--task-index {task_index})")
+        elif task_name is not None:
+            print(f"Selected task {record_task_index:04d}: {record['task_name']} (--task-name {task_name})")
+        else:
+            raise ValueError("Either task_name or task_index must be provided.")
+        return TaskInfo(
+            task_index=record_task_index,
+            task_name=record["task_name"],
+            task_prompt=record["task"],
+            raw_task_record=record,
+        )
+    selector = []
+    if task_index is not None:
+        selector.append(f"task_index={task_index}")
+    if task_name is not None:
+        selector.append(f"task_name={task_name!r}")
+    raise ValueError(f"Task ({', '.join(selector)}) not found in {source_root / 'meta/tasks.jsonl'}")
 
 
 def parse_episode_filter(raw: str | None) -> set[int] | None:
@@ -412,6 +457,7 @@ def build_info_json(
         "latent_column": args.latent_column,
         "latent_root": "latent",
         "latent_storage": "latent/data/task-XXXX/episode_XXXXXXXX.parquet",
+        "fused_action_latent_inference": True,
         "z_source": Z_SOURCE_DESCRIPTION,
     }
     info["features"]["a2c2.base_action_chunk"] = {
@@ -596,12 +642,29 @@ def stack_transformed_inputs(items: list[dict[str, Any]]) -> dict[str, Any]:
     return jax.tree_util.tree_map(stack_leaf, *items)
 
 
+def raw_obs_to_model_inputs(policy: Any, raw_batch: list[dict[str, Any]]) -> dict[str, Any]:
+    transformed = [policy._input_transform(obs) for obs in raw_batch]  # noqa: SLF001 - local dataset tool.
+    return stack_transformed_inputs(transformed)
+
+
 def raw_obs_to_model_observation(policy: Any, raw_batch: list[dict[str, Any]]) -> Any:
     from openpi.models import model as openpi_model
 
-    transformed = [policy._input_transform(obs) for obs in raw_batch]  # noqa: SLF001 - local dataset tool.
-    stacked = stack_transformed_inputs(transformed)
+    stacked = raw_obs_to_model_inputs(policy, raw_batch)
     return openpi_model.Observation.from_dict(stacked)
+
+
+def apply_policy_output_transform_batch(policy: Any, model_inputs: dict[str, Any], model_actions: np.ndarray) -> np.ndarray:
+    transformed_actions = []
+    states = np.asarray(model_inputs["state"])
+    for idx in range(model_actions.shape[0]):
+        outputs = {
+            "state": states[idx],
+            "actions": np.asarray(model_actions[idx]),
+        }
+        outputs = policy._output_transform(outputs)  # noqa: SLF001 - local dataset tool.
+        transformed_actions.append(np.asarray(outputs["actions"], dtype=np.float32))
+    return np.stack(transformed_actions, axis=0)
 
 
 def build_mock_latent_runner(latent_dim: int) -> Callable[[list[dict[str, Any]]], np.ndarray]:
@@ -662,6 +725,130 @@ def build_latent_runner(args: argparse.Namespace, policy: Any) -> Callable[[list
     return build_real_latent_runner(policy)
 
 
+def build_mock_fused_runner(
+    args: argparse.Namespace,
+    policy: Any,
+) -> Callable[[list[dict[str, Any]], np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    latent_runner = build_mock_latent_runner(args.mock_latent_dim)
+
+    def run(raw_batch: list[dict[str, Any]], _noise_batch: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        start = time.monotonic()
+        actions = np.stack(
+            [np.asarray(policy.infer(obs)["actions"], dtype=np.float32) for obs in raw_batch],
+            axis=0,
+        )
+        latents = latent_runner(raw_batch)
+        per_row_ms = np.full((len(raw_batch),), (time.monotonic() - start) * 1000 / len(raw_batch), dtype=np.float32)
+        return actions, latents, per_row_ms
+
+    return run
+
+
+def build_real_fused_runner(
+    policy: Any,
+) -> Callable[[list[dict[str, Any]], np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    if getattr(policy, "_is_pytorch_model", False):
+        raise NotImplementedError(
+            "Fused action+latent inference currently targets the JAX/Orbax COMET checkpoint path. "
+            "The local pi05-b1kpt50-cs32 checkpoint uses params/, not model.safetensors."
+        )
+
+    from flax import nnx
+    from openpi.models import model as openpi_model
+    from openpi.models.pi0 import make_attn_mask
+
+    sample_kwargs = dict(getattr(policy, "_sample_kwargs", {}))
+    num_steps = int(sample_kwargs.pop("num_steps", 10))
+    if sample_kwargs:
+        raise NotImplementedError(f"Unsupported fused sample kwargs: {sorted(sample_kwargs)}")
+
+    model = getattr(policy, "_model")
+    graphdef, state = nnx.split(model)
+
+    def run_model(
+        model_state: nnx.State,
+        observation: openpi_model.Observation,
+        noise: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
+        module = nnx.merge(graphdef, model_state)
+        observation = openpi_model.preprocess_observation(None, observation, train=False)
+        batch_size = observation.state.shape[0]
+        dt = -1.0 / num_steps
+
+        prefix_tokens, prefix_mask, prefix_ar_mask = module.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        (prefix_out, _), kv_cache = module.PaliGemma.llm(
+            [prefix_tokens, None],
+            mask=prefix_attn_mask,
+            positions=positions,
+        )
+
+        weights = prefix_mask.astype(jnp.float32)
+        pooled_z = jnp.sum(prefix_out.astype(jnp.float32) * weights[..., None], axis=1)
+        pooled_z = pooled_z / jnp.maximum(jnp.sum(weights, axis=1, keepdims=True), 1.0)
+
+        def step(carry: tuple[jax.Array, jax.Array]) -> tuple[jax.Array, jax.Array]:
+            x_t, time_value = carry
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = module.embed_suffix(
+                observation,
+                x_t,
+                jnp.broadcast_to(time_value, batch_size),
+            )
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            prefix_to_suffix_mask = jnp.broadcast_to(
+                prefix_mask[:, None, :],
+                (batch_size, suffix_tokens.shape[1], prefix_tokens.shape[1]),
+            )
+            full_attn_mask = jnp.concatenate([prefix_to_suffix_mask, suffix_attn_mask], axis=-1)
+            suffix_positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+
+            (_prefix_out, suffix_out), _ = module.PaliGemma.llm(
+                [None, suffix_tokens],
+                mask=full_attn_mask,
+                positions=suffix_positions,
+                kv_cache=kv_cache,
+                adarms_cond=[None, adarms_cond],
+            )
+            v_t = module.action_out_proj(suffix_out[:, -module.action_horizon :])
+            return x_t + dt * v_t, time_value + dt
+
+        def cond(carry: tuple[jax.Array, jax.Array]) -> jax.Array:
+            _x_t, time_value = carry
+            return time_value >= -dt / 2
+
+        actions, _ = jax.lax.while_loop(cond, step, (noise, jnp.asarray(1.0, dtype=noise.dtype)))
+        return actions, pooled_z
+
+    jitted_run_model = jax.jit(run_model)
+
+    def run(raw_batch: list[dict[str, Any]], noise_batch: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        model_inputs = raw_obs_to_model_inputs(policy, raw_batch)
+        model_inputs_jax = jax.tree_util.tree_map(jnp.asarray, model_inputs)
+        observation = openpi_model.Observation.from_dict(model_inputs_jax)
+
+        start = time.monotonic()
+        model_actions, latents = jitted_run_model(state, observation, jnp.asarray(noise_batch))
+        model_actions_np = np.asarray(model_actions, dtype=np.float32)
+        latents_np = np.asarray(latents, dtype=np.float32)
+        elapsed_ms = (time.monotonic() - start) * 1000
+
+        actions = apply_policy_output_transform_batch(policy, model_inputs, model_actions_np)
+        per_row_ms = np.full((len(raw_batch),), elapsed_ms / len(raw_batch), dtype=np.float32)
+        return actions, latents_np, per_row_ms
+
+    return run
+
+
+def build_fused_runner(
+    args: argparse.Namespace,
+    policy: Any,
+) -> Callable[[list[dict[str, Any]], np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    if args.mock_policy:
+        return build_mock_fused_runner(args, policy)
+    return build_real_fused_runner(policy)
+
+
 def flush_latent_batch(
     raw_batch: list[dict[str, Any]],
     latent_batches: list[np.ndarray],
@@ -673,10 +860,49 @@ def flush_latent_batch(
     raw_batch.clear()
 
 
+def flush_fused_batch(
+    raw_batch: list[dict[str, Any]],
+    noise_batch: list[np.ndarray],
+    local_indices: list[int],
+    chunks: np.ndarray,
+    infer_ms: np.ndarray,
+    latent_batches: list[np.ndarray],
+    fused_runner: Callable[[list[dict[str, Any]], np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]],
+    action_horizon: int,
+    action_dim: int,
+) -> None:
+    if not raw_batch:
+        return
+
+    actions, latents, batch_infer_ms = fused_runner(raw_batch, np.stack(noise_batch, axis=0))
+    if actions.shape[0] != len(raw_batch) or latents.shape[0] != len(raw_batch):
+        raise ValueError(
+            f"Fused runner returned {actions.shape[0]} action rows and {latents.shape[0]} latent rows "
+            f"for {len(raw_batch)} inputs."
+        )
+    if actions.ndim != 3 or actions.shape[1] < action_horizon or actions.shape[2] < action_dim:
+        raise ValueError(
+            f"Fused runner returned action shape {actions.shape}; "
+            f"expected at least ({len(raw_batch)}, {action_horizon}, {action_dim})."
+        )
+    if batch_infer_ms.shape[0] != len(raw_batch):
+        raise ValueError(f"Fused runner returned timing shape {batch_infer_ms.shape}; expected ({len(raw_batch)},).")
+
+    for batch_idx, local_idx in enumerate(local_indices):
+        chunks[local_idx] = actions[batch_idx, :action_horizon, :action_dim]
+        infer_ms[local_idx] = batch_infer_ms[batch_idx]
+    latent_batches.append(np.asarray(latents, dtype=np.float32))
+
+    raw_batch.clear()
+    noise_batch.clear()
+    local_indices.clear()
+
+
 def create_episode_artifacts(
     args: argparse.Namespace,
     policy: Any,
     latent_runner: Callable[[list[dict[str, Any]]], np.ndarray],
+    fused_runner: Callable[[list[dict[str, Any]], np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]] | None,
     task_info: TaskInfo,
     episode: dict[str, Any],
     need_main: bool,
@@ -701,7 +927,10 @@ def create_episode_artifacts(
     infer_ms = np.empty((num_rows,), dtype=np.float32) if need_main else None
     policy_noise_dim = get_policy_noise_dim(policy, args.model_action_dim) if need_main else args.model_action_dim
     raw_batch: list[dict[str, Any]] = []
+    fused_noise_batch: list[np.ndarray] = []
+    fused_indices: list[int] = []
     latent_batches: list[np.ndarray] = []
+    used_fused_inference = bool(need_main and need_latent and fused_runner is not None)
 
     with EpisodeRgbReader(args.source_root, task_index, ep_idx) as reader:
         for local_idx in tqdm(range(num_rows), desc=f"episode_{ep_idx:08d}", leave=False):
@@ -716,6 +945,7 @@ def create_episode_artifacts(
             }
 
             if need_main:
+                assert masks is not None
                 noise = deterministic_noise(
                     args.cache_seed,
                     ep_idx,
@@ -723,24 +953,57 @@ def create_episode_artifacts(
                     args.action_horizon,
                     policy_noise_dim,
                 )
-                start = time.monotonic()
-                action_chunk = np.asarray(policy.infer(obs, noise=noise)["actions"], dtype=np.float32)
-                infer_ms[local_idx] = np.float32((time.monotonic() - start) * 1000)
-                if action_chunk.shape[0] < args.action_horizon or action_chunk.shape[1] < args.action_dim:
-                    raise ValueError(
-                        f"Policy returned action chunk shape {action_chunk.shape}; "
-                        f"expected at least ({args.action_horizon}, {args.action_dim})."
-                    )
-                chunks[local_idx] = action_chunk[: args.action_horizon, : args.action_dim]
                 valid_len = min(args.action_horizon, num_rows - local_idx)
                 masks[local_idx, :valid_len] = True
 
-            if need_latent:
+                if used_fused_inference:
+                    raw_batch.append(obs)
+                    fused_noise_batch.append(noise)
+                    fused_indices.append(local_idx)
+                    if len(raw_batch) == args.latent_batch_size:
+                        assert chunks is not None and infer_ms is not None and fused_runner is not None
+                        flush_fused_batch(
+                            raw_batch,
+                            fused_noise_batch,
+                            fused_indices,
+                            chunks,
+                            infer_ms,
+                            latent_batches,
+                            fused_runner,
+                            args.action_horizon,
+                            args.action_dim,
+                        )
+                else:
+                    start = time.monotonic()
+                    action_chunk = np.asarray(policy.infer(obs, noise=noise)["actions"], dtype=np.float32)
+                    assert chunks is not None and infer_ms is not None
+                    infer_ms[local_idx] = np.float32((time.monotonic() - start) * 1000)
+                    if action_chunk.shape[0] < args.action_horizon or action_chunk.shape[1] < args.action_dim:
+                        raise ValueError(
+                            f"Policy returned action chunk shape {action_chunk.shape}; "
+                            f"expected at least ({args.action_horizon}, {args.action_dim})."
+                        )
+                    chunks[local_idx] = action_chunk[: args.action_horizon, : args.action_dim]
+
+            if need_latent and not used_fused_inference:
                 raw_batch.append(obs)
                 if len(raw_batch) == args.latent_batch_size:
                     flush_latent_batch(raw_batch, latent_batches, latent_runner)
 
-        if need_latent:
+        if used_fused_inference:
+            assert chunks is not None and infer_ms is not None and fused_runner is not None
+            flush_fused_batch(
+                raw_batch,
+                fused_noise_batch,
+                fused_indices,
+                chunks,
+                infer_ms,
+                latent_batches,
+                fused_runner,
+                args.action_horizon,
+                args.action_dim,
+            )
+        elif need_latent:
             flush_latent_batch(raw_batch, latent_batches, latent_runner)
 
     main_table: pa.Table | None = None
@@ -773,6 +1036,7 @@ def create_episode_artifacts(
         "rows": int(num_rows),
         "main_generated": bool(need_main),
         "latent_generated": bool(need_latent),
+        "fused_action_latent_inference": used_fused_inference,
         "base_action_chunk_shape": [args.action_horizon, args.action_dim],
     }
     if infer_ms is not None:
@@ -806,6 +1070,7 @@ def process_episode(
     args: argparse.Namespace,
     policy: Any,
     latent_runner: Callable[[list[dict[str, Any]]], np.ndarray],
+    fused_runner: Callable[[list[dict[str, Any]], np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]] | None,
     task_info: TaskInfo,
     episode: dict[str, Any],
 ) -> dict[str, Any]:
@@ -838,6 +1103,7 @@ def process_episode(
         args,
         policy,
         latent_runner,
+        fused_runner,
         task_info,
         episode,
         need_main,
@@ -893,6 +1159,7 @@ def write_manifests(
         "row_alignment": "Main parquet rows and latent parquet rows match by episode and row order.",
         "z_source": Z_SOURCE_DESCRIPTION,
         "full_action_inference_run": True,
+        "fused_action_latent_inference": True,
         "episodes": episode_summaries,
     }
     atomic_write_json(args.output_root / "manifest.json", root_manifest)
@@ -928,9 +1195,12 @@ def main() -> None:
     args.source_root = args.source_root.resolve()
     args.openpi_root = args.openpi_root.resolve()
     args.checkpoint_dir = args.checkpoint_dir.resolve()
+
+    task_info = get_task_info(args.source_root, args.task_name, args.task_index)
+    if args.output_root is None:
+        args.output_root = default_output_root_for_task(task_info.task_name)
     args.output_root = args.output_root.resolve()
 
-    task_info = get_task_info(args.source_root, args.task_name)
     selected_episodes = select_episodes(
         args.source_root,
         task_info.task_index,
@@ -944,13 +1214,15 @@ def main() -> None:
     if any(episode_needs_work(args, task_info, episode) for episode in selected_episodes):
         policy = load_policy(args, task_info.task_prompt)
         latent_runner = build_latent_runner(args, policy)
+        fused_runner = build_fused_runner(args, policy)
     else:
         policy = None
         latent_runner = noop_latent_runner
+        fused_runner = None
 
     episode_summaries: list[dict[str, Any]] = []
     for episode in tqdm(selected_episodes, desc="episodes"):
-        episode_summaries.append(process_episode(args, policy, latent_runner, task_info, episode))
+        episode_summaries.append(process_episode(args, policy, latent_runner, fused_runner, task_info, episode))
 
     write_manifests(args, task_info, selected_episodes, episode_summaries)
     print(f"Wrote integrated A2C2 dataset to: {args.output_root}")
