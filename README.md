@@ -6,9 +6,9 @@ PI0.5 baseline policy to extract base action chunks and policy latents, then
 trains an A2C2 correction head to predict the residual between the expert
 action and the baseline action.
 
-The outer `behavior-a2c2` repository owns the setup workflow, documentation, A2C2
-training code, and submodule pins. The forked upstream projects remain
-submodules.
+The outer `behavior-a2c2` repository owns the setup workflow, documentation, and
+A2C2 training code. The forked upstream projects remain submodules and track the
+branches configured in `.gitmodules`.
 
 ## Repository Layout
 
@@ -29,11 +29,11 @@ behavior-a2c2/
     openpi_modification/   # reference-only OpenPI A2C2 patches
 ```
 
-Pinned submodules:
+Tracked submodules:
 
 ```text
-openpi-comet  0a08b229505da406f1041e15cf01c77ebc8953cf
-BEHAVIOR-1K   398ff024db4c5b5e8be0fd38e632bc00579eb470
+openpi-comet  ljc-1222/openpi-comet, dev/ljc-1222
+BEHAVIOR-1K   ljc-1222/BEHAVIOR-1K, dev/ljc-1222
 ```
 
 ## Requirements
@@ -59,10 +59,14 @@ Recommended:
 ```bash
 git clone --filter=blob:none https://github.com/ljc-1222/behavior-a2c2.git
 cd behavior-a2c2
-git submodule update --init --recursive --depth 1 --filter=blob:none
+git submodule update --init --recursive --remote --depth 1 --filter=blob:none
 ```
 
-One-command clone:
+`--remote` checks out the latest commits from the branches recorded in
+`.gitmodules`. Without `--remote`, Git submodules use the exact gitlink commits
+recorded by the outer repository.
+
+One-command clone, followed by branch-tip submodule sync:
 
 ```bash
 git clone \
@@ -72,12 +76,21 @@ git clone \
   --shallow-submodules \
   https://github.com/ljc-1222/behavior-a2c2.git
 cd behavior-a2c2
+git submodule update --init --recursive --remote --depth 1 --filter=blob:none
 ```
 
 `setup.sh` also checks the submodules and initializes them when needed:
 
 ```bash
-git submodule update --init --recursive --depth 1 --filter=blob:none openpi-comet BEHAVIOR-1K
+git submodule update --init --recursive --remote --depth 1 --filter=blob:none openpi-comet BEHAVIOR-1K
+```
+
+For a reproducible checkout, set explicit pins before running setup:
+
+```bash
+export B1K_OPENPI_SUBMODULE_COMMIT=<openpi-comet-sha>
+export B1K_BEHAVIOR_SUBMODULE_COMMIT=<BEHAVIOR-1K-sha>
+bash setup.sh
 ```
 
 For `BEHAVIOR-1K`, setup uses sparse checkout by default to keep only the files
@@ -467,12 +480,15 @@ git -C openpi-comet switch dev/ljc-1222
 git -C BEHAVIOR-1K switch dev/ljc-1222
 ```
 
-Commit and push inside the submodule first. Then update the outer gitlink:
+Commit and push inside the submodule first. The setup path follows the branch
+recorded in `.gitmodules`, so README/setup do not need a SHA update for every
+submodule commit. Update the outer gitlink when you want a reproducible
+workspace snapshot:
 
 ```bash
 cd "$B1K_ROOT"
 git add openpi-comet BEHAVIOR-1K .gitmodules setup.sh README.md
-git commit -m "chore: update submodule pins"
+git commit -m "chore: update submodule gitlinks"
 ```
 
 Check submodule state:

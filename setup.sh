@@ -11,8 +11,8 @@ CONDA_DIR="${B1K_CONDA_DIR:-}"
 CONDA_EXE="${B1K_CONDA_EXE:-}"
 CONDA_ENV="${B1K_CONDA_ENV:-behavior}"
 
-OPENPI_SUBMODULE_COMMIT="0a08b229505da406f1041e15cf01c77ebc8953cf"
-BEHAVIOR_SUBMODULE_COMMIT="398ff024db4c5b5e8be0fd38e632bc00579eb470"
+OPENPI_SUBMODULE_COMMIT="${B1K_OPENPI_SUBMODULE_COMMIT:-}"
+BEHAVIOR_SUBMODULE_COMMIT="${B1K_BEHAVIOR_SUBMODULE_COMMIT:-}"
 TASK_NAME="${B1K_TASK_NAME:-tidying_bedroom}"
 TASK_DIR="${B1K_TASK_DIR:-task-0018}"
 CHECKPOINT_NAME="${B1K_CHECKPOINT_NAME:-pi05-b1kpt50-cs32}"
@@ -79,6 +79,7 @@ Environment overrides:
   B1K_DOWNLOAD_BEHAVIOR_DATASET, B1K_DOWNLOAD_CHALLENGE_DEMOS,
   B1K_DOWNLOAD_CHECKPOINT, B1K_CHECKPOINT_NAME,
   B1K_UPDATE_SUBMODULES, B1K_BEHAVIOR_SPARSE_CHECKOUT,
+  B1K_OPENPI_SUBMODULE_COMMIT, B1K_BEHAVIOR_SUBMODULE_COMMIT,
   B1K_TASK_NAME, B1K_TASK_DIR
 EOF
 }
@@ -453,9 +454,31 @@ initialize_submodules() {
 
   log "Initializing project submodules"
   git -C "$ROOT_DIR" submodule sync --recursive
+  update_submodules_to_configured_branches
+}
+
+update_submodules_to_configured_branches() {
   GIT_LFS_SKIP_SMUDGE=1 git -C "$ROOT_DIR" submodule update \
-    --init --recursive --depth 1 --filter=blob:none \
+    --init --recursive --remote --depth 1 --filter=blob:none \
     openpi-comet BEHAVIOR-1K
+}
+
+checkout_submodule_pin_if_requested() {
+  local name="$1"
+  local dir="$2"
+  local expected="$3"
+  local url
+
+  [ -n "$expected" ] || return
+  is_git_checkout "$dir" || die "$name is not checked out at $dir"
+
+  log "Checking out $name submodule pin: $expected"
+  if ! git -C "$dir" cat-file -e "$expected^{commit}" >/dev/null 2>&1; then
+    url="$(git -C "$ROOT_DIR" config -f "$ROOT_DIR/.gitmodules" --get "submodule.$name.url")"
+    [ -n "$url" ] || die "Missing .gitmodules URL for $name"
+    GIT_LFS_SKIP_SMUDGE=1 git -C "$dir" fetch --depth 1 "$url" "$expected"
+  fi
+  git -C "$dir" checkout --detach "$expected"
 }
 
 configure_behavior_sparse_checkout() {
@@ -477,8 +500,12 @@ verify_submodule_commit() {
 
   is_git_checkout "$dir" || die "$name is not checked out at $dir"
   actual="$(git -C "$dir" rev-parse HEAD)"
+  if [ -z "$expected" ]; then
+    log "$name submodule commit: $actual"
+    return
+  fi
   if [ "$actual" != "$expected" ]; then
-    die "$name submodule is at $actual, expected $expected. Run git submodule update --init --recursive, or update setup.sh and the gitlink together."
+    die "$name submodule is at $actual, expected $expected. Unset the matching B1K_*_SUBMODULE_COMMIT variable to use the latest configured branch commit."
   fi
   log "$name submodule commit: $actual"
 }
@@ -503,14 +530,14 @@ ensure_submodules() {
   if ! is_git_checkout "$OPENPI_DIR" || ! is_git_checkout "$BEHAVIOR_DIR"; then
     initialize_submodules
   elif truthy "$UPDATE_SUBMODULES"; then
-    log "Synchronizing project submodules to the pinned commits"
-    GIT_LFS_SKIP_SMUDGE=1 git -C "$ROOT_DIR" submodule update \
-      --init --recursive --depth 1 --filter=blob:none \
-      openpi-comet BEHAVIOR-1K
+    log "Synchronizing project submodules to the latest configured branch commits"
+    update_submodules_to_configured_branches
   else
     log "Using existing submodule checkouts"
   fi
 
+  checkout_submodule_pin_if_requested "openpi-comet" "$OPENPI_DIR" "$OPENPI_SUBMODULE_COMMIT"
+  checkout_submodule_pin_if_requested "BEHAVIOR-1K" "$BEHAVIOR_DIR" "$BEHAVIOR_SUBMODULE_COMMIT"
   configure_behavior_sparse_checkout
   verify_submodule_commit "openpi-comet" "$OPENPI_DIR" "$OPENPI_SUBMODULE_COMMIT"
   verify_submodule_commit "BEHAVIOR-1K" "$BEHAVIOR_DIR" "$BEHAVIOR_SUBMODULE_COMMIT"
