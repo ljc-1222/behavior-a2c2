@@ -1,4 +1,4 @@
-# b1k A2C2 Task18 Workspace
+# behavior-a2c2 A2C2 Task18 Workspace
 
 This repository is the outer workspace for the BEHAVIOR-1K task18
 (`tidying_bedroom`) A2C2 experiment. The project uses the `openpi-comet`
@@ -6,14 +6,14 @@ PI0.5 baseline policy to extract base action chunks and policy latents, then
 trains an A2C2 correction head to predict the residual between the expert
 action and the baseline action.
 
-The outer `b1k` repository owns the setup workflow, documentation, A2C2
+The outer `behavior-a2c2` repository owns the setup workflow, documentation, A2C2
 training code, and submodule pins. The forked upstream projects remain
 submodules.
 
 ## Repository Layout
 
 ```text
-b1k/
+behavior-a2c2/
   README.md
   setup.sh
   .gitmodules
@@ -32,7 +32,7 @@ b1k/
 Pinned submodules:
 
 ```text
-openpi-comet  ec1dfe54757a731123869f6e5fe16e4a0a1cea0c
+openpi-comet  0a08b229505da406f1041e15cf01c77ebc8953cf
 BEHAVIOR-1K   398ff024db4c5b5e8be0fd38e632bc00579eb470
 ```
 
@@ -57,8 +57,8 @@ runtime libraries, and related dependencies.
 Recommended:
 
 ```bash
-git clone --filter=blob:none https://github.com/ljc-1222/b1k.git
-cd b1k
+git clone --filter=blob:none https://github.com/ljc-1222/behavior-a2c2.git
+cd behavior-a2c2
 git submodule update --init --recursive --depth 1 --filter=blob:none
 ```
 
@@ -70,8 +70,8 @@ git clone \
   --also-filter-submodules \
   --recurse-submodules \
   --shallow-submodules \
-  https://github.com/ljc-1222/b1k.git
-cd b1k
+  https://github.com/ljc-1222/behavior-a2c2.git
+cd behavior-a2c2
 ```
 
 `setup.sh` also checks the submodules and initializes them when needed:
@@ -105,7 +105,7 @@ bash setup.sh --skip-system-packages
 bash setup.sh --download-conda
 
 # Use a specific conda root.
-bash setup.sh --conda-dir "$HOME/.local/share/b1k/miniforge3"
+bash setup.sh --conda-dir "$HOME/.local/share/behavior-a2c2/miniforge3"
 
 # Skip BEHAVIOR runtime assets and task instances.
 bash setup.sh --skip-behavior-dataset
@@ -435,10 +435,11 @@ uv run --no-sync python ../a2c2/scripts/test_online_eval.py
 ```
 
 The smoke test uses a fake BEHAVIOR environment, a fake base policy, and a
-deterministic A2C2 head. It verifies that a new base chunk is requested at the
-correct steps, each residual sees the latest observation in the expected tensor
-shapes, and the action sent to the environment is exactly `base_action +
-residual`.
+deterministic A2C2 head. It first checks that the pinned `openpi-comet` exposes
+the latent APIs needed by `model_latent.pt`, then verifies that a new base chunk
+is requested at the correct steps, each residual sees the latest observation in
+the expected tensor shapes, and the action sent to the environment is exactly
+`base_action + residual`.
 
 ## Submodule Maintenance
 
@@ -464,7 +465,7 @@ git submodule status --recursive
 git submodule foreach 'git status --short --branch'
 ```
 
-The outer `b1k` repository uses `main` for these setup/documentation commits.
+The outer `behavior-a2c2` repository uses `main` for these setup/documentation commits.
 The nested forks use their `dev/ljc-1222` branches.
 
 ## Ignored Local Outputs

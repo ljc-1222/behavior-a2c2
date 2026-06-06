@@ -6,12 +6,12 @@ ROOT_DIR="${B1K_ROOT:-$(pwd -P)}"
 OPENPI_DIR="$ROOT_DIR/openpi-comet"
 BEHAVIOR_DIR="$ROOT_DIR/BEHAVIOR-1K"
 PROJECT_CONDA_DIR="$ROOT_DIR/miniconda3"
-DEFAULT_CONDA_DIR="${B1K_DEFAULT_CONDA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/b1k/miniforge3}"
+DEFAULT_CONDA_DIR="${B1K_DEFAULT_CONDA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/behavior-a2c2/miniforge3}"
 CONDA_DIR="${B1K_CONDA_DIR:-}"
 CONDA_EXE="${B1K_CONDA_EXE:-}"
 CONDA_ENV="${B1K_CONDA_ENV:-behavior}"
 
-OPENPI_SUBMODULE_COMMIT="ec1dfe54757a731123869f6e5fe16e4a0a1cea0c"
+OPENPI_SUBMODULE_COMMIT="0a08b229505da406f1041e15cf01c77ebc8953cf"
 BEHAVIOR_SUBMODULE_COMMIT="398ff024db4c5b5e8be0fd38e632bc00579eb470"
 TASK_NAME="${B1K_TASK_NAME:-tidying_bedroom}"
 TASK_DIR="${B1K_TASK_DIR:-task-0018}"
@@ -54,7 +54,7 @@ usage() {
   cat <<EOF
 Usage: bash setup.sh [OPTIONS]
 
-Sets up the b1k A2C2 workspace using openpi-comet + BEHAVIOR-1K submodules.
+Sets up the behavior-a2c2 workspace using openpi-comet + BEHAVIOR-1K submodules.
 
 Options:
   -h, --help                         Show this help message
@@ -448,7 +448,7 @@ is_git_checkout() {
 initialize_submodules() {
   truthy "$UPDATE_SUBMODULES" || die "Submodules are missing. Rerun without --skip-submodule-update."
   git -C "$ROOT_DIR" rev-parse --show-toplevel >/dev/null 2>&1 || \
-    die "This setup expects a git clone of b1k. Clone with submodules instead of using a source archive."
+    die "This setup expects a git clone of behavior-a2c2. Clone with submodules instead of using a source archive."
   [ -f "$ROOT_DIR/.gitmodules" ] || die "Missing .gitmodules; cannot initialize project submodules."
 
   log "Initializing project submodules"
@@ -489,6 +489,10 @@ verify_submodule_patches() {
     die "openpi-comet submodule is missing the self-contained B1K websocket server patch"
   test -f "$OPENPI_DIR/src/openpi/shared/b1k_network_utils.py" || \
     die "openpi-comet submodule is missing src/openpi/shared/b1k_network_utils.py"
+  grep -q "def infer_with_prefix_z" "$OPENPI_DIR/src/openpi/policies/policy.py" || \
+    die "openpi-comet submodule is missing Policy.infer_with_prefix_z required by latent A2C2 online eval"
+  grep -q "return_prefix_z" "$OPENPI_DIR/src/openpi/models/pi0.py" || \
+    die "openpi-comet submodule is missing Pi0 return_prefix_z required by latent A2C2 online eval"
   test -f "$BEHAVIOR_DIR/OmniGibson/omnigibson/learning/eval_custom.py" || \
     die "BEHAVIOR-1K submodule is missing OmniGibson learning eval_custom.py"
   test -f "$BEHAVIOR_DIR/OmniGibson/omnigibson/learning/wrappers/rgb_wrapper.py" || \

@@ -435,8 +435,10 @@ cd "$B1K_ROOT/openpi-comet"
 uv run --no-sync python ../a2c2/scripts/test_online_eval.py
 ```
 
-`test_online_eval.py` runs a fake BEHAVIOR environment for five steps. It
-checks that base chunks are fetched at environment steps 0 and 3, correction
+`test_online_eval.py` first checks that the pinned `openpi-comet` exposes
+`Policy.infer_with_prefix_z(...)` and `Pi0.sample_actions(...,
+return_prefix_z=True)`, then runs a fake BEHAVIOR environment for five steps.
+It checks that base chunks are fetched at environment steps 0 and 3, correction
 offsets are 0, 1, 2, 0, 1, the correction head receives tensors with the online
 evaluation shapes, and the fake environment receives `base_action + residual`
 for every step.

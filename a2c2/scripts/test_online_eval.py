@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import inspect
 import os
 from pathlib import Path
 import sys
@@ -30,6 +31,16 @@ ACTION_DIM = 23
 STATE_DIM = 256
 Z_DIM = 2048
 HORIZON = 4
+
+
+def check_openpi_patch_surface() -> None:
+    from openpi.models.pi0 import Pi0
+    from openpi.policies.policy import Policy, PolicyRecorder
+
+    assert hasattr(Policy, "infer_with_prefix_z"), "Policy.infer_with_prefix_z is missing"
+    assert hasattr(PolicyRecorder, "infer_with_prefix_z"), "PolicyRecorder.infer_with_prefix_z is missing"
+    sample_signature = inspect.signature(Pi0.sample_actions)
+    assert "return_prefix_z" in sample_signature.parameters, "Pi0.sample_actions is missing return_prefix_z"
 
 
 class FakeBasePolicy:
@@ -162,6 +173,7 @@ def expected_time_feature(offset: int) -> np.ndarray:
 
 
 def run_smoke() -> None:
+    check_openpi_patch_surface()
     os.chdir(OPENPI_ROOT)
     with tempfile.TemporaryDirectory(prefix="a2c2_online_smoke_") as tmpdir:
         checkpoint = Path(tmpdir) / "tiny_a2c2.pt"
@@ -212,6 +224,7 @@ def run_smoke() -> None:
         np.testing.assert_allclose(env.actions[step], expected_action, atol=1e-6)
 
     print("online A2C2 smoke test passed")
+    print("OpenPI prefix latent API surface checked")
     print(f"base policy calls at env steps: {[call['state0'] for call in base_policy.calls]}")
     print(f"correction offsets: {expected_offsets}")
     print(f"env actions checked: {len(env.actions)}")
