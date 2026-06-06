@@ -23,7 +23,7 @@ client_src = OPENPI_ROOT / "packages" / "openpi-client" / "src"
 if client_src.is_dir():
     sys.path.insert(0, str(client_src))
 
-from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig  # noqa: E402
+from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig, config_from_checkpoint_payload  # noqa: E402
 from online import A2C2B1KPolicyWrapper  # noqa: E402
 
 
@@ -31,6 +31,9 @@ ACTION_DIM = 23
 STATE_DIM = 256
 Z_DIM = 2048
 HORIZON = 4
+IMAGE_SIZE = 8
+LANGUAGE_MAX_LENGTH = 8
+TASK_INFO_DIM = 82
 
 
 def check_openpi_patch_surface() -> None:
@@ -41,6 +44,40 @@ def check_openpi_patch_surface() -> None:
     assert hasattr(PolicyRecorder, "infer_with_prefix_z"), "PolicyRecorder.infer_with_prefix_z is missing"
     sample_signature = inspect.signature(Pi0.sample_actions)
     assert "return_prefix_z" in sample_signature.parameters, "Pi0.sample_actions is missing return_prefix_z"
+
+
+def check_legacy_checkpoint_rejected() -> None:
+    legacy_payload = {
+        "model_state_dict": {},
+        "config": {
+            "action_horizon": HORIZON,
+            "use_base_policy_z": True,
+        },
+    }
+    try:
+        config_from_checkpoint_payload(legacy_payload, context="legacy smoke checkpoint")
+    except ValueError as exc:
+        assert "Pre-RGBD/task-language" in str(exc)
+    else:
+        raise AssertionError("Legacy A2C2 checkpoint config was accepted.")
+
+    try:
+        A2C2CorrectionHead(
+            A2C2CorrectionHeadConfig(
+                action_horizon=HORIZON,
+                use_rgb=True,
+                use_depth=False,
+                use_language=True,
+                rgb_backbone="small-cnn",
+                depth_backbone="small-cnn",
+                pretrained_rgb=False,
+                pretrained_depth=False,
+            )
+        )
+    except ValueError as exc:
+        assert "depth" in str(exc).lower()
+    else:
+        raise AssertionError("A2C2 model accepted a config without depth.")
 
 
 class FakeBasePolicy:
@@ -90,6 +127,7 @@ class RecordingCorrectionHead:
     ) -> torch.Tensor:
         step = float(observation_state[0, 0].detach().cpu())
         residual = torch.full_like(selected_base_action, step)
+        optional = {key: value for key, value in kwargs.items() if value is not None}
         self.calls.append(
             {
                 "observation_state_shape": tuple(observation_state.shape),
@@ -98,7 +136,8 @@ class RecordingCorrectionHead:
                 "base_policy_z_shape": tuple(base_policy_z.shape),
                 "time_feature_shape": tuple(time_feature.shape),
                 "valid_action_mask_shape": tuple(valid_action_mask.shape) if valid_action_mask is not None else None,
-                "optional_keys": sorted(key for key, value in kwargs.items() if value is not None),
+                "optional_keys": sorted(optional),
+                "optional_shapes": {key: tuple(value.shape) for key, value in optional.items()},
                 "step": step,
                 "selected_base_action": selected_base_action.detach().cpu().numpy()[0].copy(),
                 "base_action_chunk": base_action_chunk.detach().cpu().numpy()[0].copy(),
@@ -119,12 +158,37 @@ class FakeBehaviorEnv:
         proprio = np.zeros((STATE_DIM,), dtype=np.float32)
         proprio[0] = float(self.step_index)
         image_value = np.uint8(self.step_index)
+        depth_value = np.float32(0.25 + 0.01 * self.step_index)
         return {
             "robot_r1::proprio": proprio,
-            "robot_r1::robot_r1:zed_link:Camera:0::rgb": np.full((8, 8, 3), image_value, dtype=np.uint8),
-            "robot_r1::robot_r1:left_realsense_link:Camera:0::rgb": np.full((8, 8, 3), image_value, dtype=np.uint8),
-            "robot_r1::robot_r1:right_realsense_link:Camera:0::rgb": np.full((8, 8, 3), image_value, dtype=np.uint8),
+            "robot_r1::robot_r1:zed_link:Camera:0::rgb": np.full((IMAGE_SIZE, IMAGE_SIZE, 3), image_value, dtype=np.uint8),
+            "robot_r1::robot_r1:left_realsense_link:Camera:0::rgb": np.full(
+                (IMAGE_SIZE, IMAGE_SIZE, 3),
+                image_value,
+                dtype=np.uint8,
+            ),
+            "robot_r1::robot_r1:right_realsense_link:Camera:0::rgb": np.full(
+                (IMAGE_SIZE, IMAGE_SIZE, 3),
+                image_value,
+                dtype=np.uint8,
+            ),
+            "robot_r1::robot_r1:zed_link:Camera:0::depth_linear": np.full(
+                (IMAGE_SIZE, IMAGE_SIZE),
+                depth_value,
+                dtype=np.float32,
+            ),
+            "robot_r1::robot_r1:left_realsense_link:Camera:0::depth_linear": np.full(
+                (IMAGE_SIZE, IMAGE_SIZE),
+                depth_value,
+                dtype=np.float32,
+            ),
+            "robot_r1::robot_r1:right_realsense_link:Camera:0::depth_linear": np.full(
+                (IMAGE_SIZE, IMAGE_SIZE),
+                depth_value,
+                dtype=np.float32,
+            ),
             "robot_r1::cam_rel_poses": np.full((21,), float(self.step_index), dtype=np.float32),
+            "observation.task_info": np.full((TASK_INFO_DIM,), float(self.step_index), dtype=np.float32),
             "task_id": np.array([18], dtype=np.int64),
         }
 
@@ -145,19 +209,27 @@ def make_tiny_checkpoint(path: Path) -> None:
         dim_feedforward=64,
         dropout=0.0,
         mlp_hidden_dim=64,
-        use_rgb=False,
-        use_depth=False,
-        use_language=False,
-        use_cam_rel_poses=False,
-        use_task_info=False,
-        use_policy_infer_ms=False,
+        use_rgb=True,
+        use_depth=True,
+        use_language=True,
+        use_cam_rel_poses=True,
+        use_task_info=True,
+        use_policy_infer_ms=True,
+        rgb_backbone="small-cnn",
+        depth_backbone="small-cnn",
+        pretrained_rgb=False,
+        pretrained_depth=False,
+        freeze_rgb=False,
+        freeze_depth=False,
+        language_max_length=LANGUAGE_MAX_LENGTH,
+        task_info_dim=TASK_INFO_DIM,
     )
     model = A2C2CorrectionHead(cfg)
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "config": asdict(cfg),
-            "args": {"image_size": 8},
+            "args": {"image_size": IMAGE_SIZE},
         },
         path,
     )
@@ -174,6 +246,7 @@ def expected_time_feature(offset: int) -> np.ndarray:
 
 def run_smoke() -> None:
     check_openpi_patch_surface()
+    check_legacy_checkpoint_rejected()
     os.chdir(OPENPI_ROOT)
     with tempfile.TemporaryDirectory(prefix="a2c2_online_smoke_") as tmpdir:
         checkpoint = Path(tmpdir) / "tiny_a2c2.pt"
@@ -212,7 +285,24 @@ def run_smoke() -> None:
         assert record["base_policy_z_shape"] == (1, Z_DIM)
         assert record["time_feature_shape"] == (1, 2)
         assert record["valid_action_mask_shape"] == (1, HORIZON)
-        assert record["optional_keys"] == []
+        assert record["optional_keys"] == [
+            "cam_rel_poses",
+            "depth_images",
+            "language_token_mask",
+            "language_tokens",
+            "policy_infer_ms",
+            "rgb_images",
+            "task_info",
+        ]
+        assert record["optional_shapes"] == {
+            "cam_rel_poses": (1, 21),
+            "depth_images": (1, 3, 3, IMAGE_SIZE, IMAGE_SIZE),
+            "language_token_mask": (1, LANGUAGE_MAX_LENGTH),
+            "language_tokens": (1, LANGUAGE_MAX_LENGTH),
+            "policy_infer_ms": (1, 1),
+            "rgb_images": (1, 3, 3, IMAGE_SIZE, IMAGE_SIZE),
+            "task_info": (1, TASK_INFO_DIM),
+        }
         assert record["step"] == float(step)
         np.testing.assert_allclose(record["selected_base_action"], expected_base(chunk_call, offset), atol=1e-6)
         np.testing.assert_allclose(record["base_action_chunk"][offset], expected_base(chunk_call, offset), atol=1e-6)
@@ -225,6 +315,7 @@ def run_smoke() -> None:
 
     print("online A2C2 smoke test passed")
     print("OpenPI prefix latent API surface checked")
+    print("legacy no-RGBD/task-language checkpoint rejection checked")
     print(f"base policy calls at env steps: {[call['state0'] for call in base_policy.calls]}")
     print(f"correction offsets: {expected_offsets}")
     print(f"env actions checked: {len(env.actions)}")

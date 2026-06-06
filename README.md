@@ -203,6 +203,10 @@ The downloader limits the Hugging Face snapshot to the repo metadata and that
 variant directory. Other variants are excluded unless `--download-all-variants`
 is passed explicitly.
 
+After download, `create_dataset.py` validates that the selected dataset root has
+natural-language task text plus three RGB and three depth videos for every
+episode. Dataset roots without that RGBD/task-language surface are rejected.
+
 The selected files are downloaded under:
 
 ```text
@@ -227,6 +231,9 @@ a2c2/README.md
 Most users should download the released dataset. Rebuild only when changing the
 source demos, OpenPI checkpoint, model config, task selection, or latent/action
 extraction code.
+
+Rebuild mode performs the same RGBD/task-language surface check on the selected
+BEHAVIOR source episodes before writing A2C2 artifacts.
 
 ```bash
 cd "$B1K_ROOT"
@@ -391,10 +398,13 @@ Output videos are written under `$RUN_LOG/videos/`.
 ## Online A2C2 BEHAVIOR Evaluation
 
 Online A2C2 uses the same BEHAVIOR websocket client command as the baseline
-section. Replace only Terminal 1 with the A2C2 server below. The server keeps
-the OpenPI-COMET base policy in the loop, caches each base action chunk and
-base-policy latent, then runs the A2C2 residual head at every environment step
-using the latest observation before returning `base_action + residual`.
+section, but it must use an environment wrapper that exposes depth observations.
+Replace Terminal 1 with the A2C2 server below and use
+`omnigibson.learning.wrappers.DefaultWrapper` in Terminal 2 instead of
+`RGBWrapper`. The server keeps the OpenPI-COMET base policy in the loop, caches
+each base action chunk and base-policy latent, then runs the A2C2 residual head
+at every environment step using the latest RGBD observation and task-language
+prompt before returning `base_action + residual`.
 
 ```bash
 cd "$B1K_ROOT/openpi-comet"
@@ -403,7 +413,7 @@ export UV_CACHE_DIR="$B1K_ROOT/.uv-cache"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.35
 export JAX_COMPILATION_CACHE_DIR="$B1K_ROOT/.cache/jax"
-export A2C2_CHECKPOINT="${A2C2_CHECKPOINT:-$B1K_ROOT/a2c2/ckpt/model_latent.pt}"
+export A2C2_CHECKPOINT="${A2C2_CHECKPOINT:-$B1K_ROOT/a2c2/runs/task18_wandb_bs128_w8_bpe4/latest.pt}"
 
 uv run --no-sync ../a2c2/scripts/serve_a2c2_b1k.py \
   --task-name="$B1K_TASK_NAME" \
@@ -415,17 +425,22 @@ uv run --no-sync ../a2c2/scripts/serve_a2c2_b1k.py \
   --policy.dir="./checkpoints/$B1K_CHECKPOINT_NAME"
 ```
 
-Use `a2c2/ckpt/model_no_latent.pt` with `--a2c2-checkpoint` to run a checkpoint
-that does not require `prefix_z`. The latent checkpoint requires the active
-`openpi-comet` patches in `src/openpi/models/pi0.py` and
-`src/openpi/policies/policy.py`.
+The A2C2 checkpoint must be a new RGBD + task-language artifact. Checkpoints
+whose serialized config omits `use_rgb`, `use_depth`, or `use_language`, or sets
+any of them to false, are pre-RGBD/task-language artifacts and are rejected by
+the A2C2 loaders. There is no compatibility path for those old artifacts.
 
-The checked-in task18 checkpoints use state, base action chunk, selected base
-action, time feature, and optionally `prefix_z`, so `RGBWrapper` is sufficient
-for the BEHAVIOR command above. Future checkpoints trained with online RGB,
-depth, camera-pose, task-info, language, or policy-timing features must be run
-with matching online observations. `--allow-missing-online-features` exists only
-for zero-filled smoke runs.
+Latent checkpoints require the active `openpi-comet` patches in
+`src/openpi/models/pi0.py` and `src/openpi/policies/policy.py`.
+
+For Terminal 2, keep the baseline command structure but change the wrapper:
+
+```bash
+env_wrapper._target_=omnigibson.learning.wrappers.DefaultWrapper
+```
+
+`DefaultWrapper` enables the `depth_linear` camera modalities needed by online
+A2C2. `RGBWrapper` is only sufficient for the baseline OpenPI evaluation.
 
 Fast online smoke test:
 
@@ -434,12 +449,12 @@ cd "$B1K_ROOT/openpi-comet"
 uv run --no-sync python ../a2c2/scripts/test_online_eval.py
 ```
 
-The smoke test uses a fake BEHAVIOR environment, a fake base policy, and a
-deterministic A2C2 head. It first checks that the pinned `openpi-comet` exposes
-the latent APIs needed by `model_latent.pt`, then verifies that a new base chunk
-is requested at the correct steps, each residual sees the latest observation in
-the expected tensor shapes, and the action sent to the environment is exactly
-`base_action + residual`.
+The smoke test uses a fake BEHAVIOR environment with RGBD, task text, camera
+pose, and task-info fields, a fake base policy, and a deterministic A2C2 head.
+It first checks that the pinned `openpi-comet` exposes the latent APIs, verifies
+that legacy no-RGBD/task-language checkpoint configs are rejected, then checks
+that each residual sees the latest observation in the expected tensor shapes and
+the action sent to the environment is exactly `base_action + residual`.
 
 ## Submodule Maintenance
 

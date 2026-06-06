@@ -62,6 +62,12 @@ RGB_VIDEO_KEYS = {
     "left_wrist": "observation.images.rgb.left_wrist",
     "right_wrist": "observation.images.rgb.right_wrist",
 }
+DEPTH_VIDEO_KEYS = {
+    "head": "observation.images.depth.head",
+    "left_wrist": "observation.images.depth.left_wrist",
+    "right_wrist": "observation.images.depth.right_wrist",
+}
+REQUIRED_A2C2_VIDEO_KEYS = tuple(RGB_VIDEO_KEYS.values()) + tuple(DEPTH_VIDEO_KEYS.values())
 
 Z_SOURCE_DESCRIPTION = (
     "mask-pooled prefix_out from COMET/OpenPI PI0.5 PaliGemma prefix forward "
@@ -312,6 +318,7 @@ def summarize_downloaded_dataset(dataset_root: Path) -> None:
         rel = root.relative_to(dataset_root).as_posix()
         if rel == ".":
             rel = dataset_root.name
+        validate_rgbd_task_text_surface(root)
         data_parquets = sum(1 for path in (root / "data").rglob("*.parquet") if path.is_file())
         latent_parquets = sum(1 for path in (root / "latent" / "data").rglob("*.parquet") if path.is_file())
         videos = sum(1 for path in (root / "videos").rglob("*.mp4") if path.is_file())
@@ -389,10 +396,13 @@ def get_task_info(source_root: Path, task_name: str | None, task_index: int | No
             print(f"Selected task {record_task_index:04d}: {record['task_name']} (--task-name {task_name})")
         else:
             raise ValueError("Either task_name or task_index must be provided.")
+        task_prompt = str(record.get("task") or "").strip()
+        if not task_prompt:
+            raise ValueError(f"Task {record_task_index:04d} has no natural-language task text.")
         return TaskInfo(
             task_index=record_task_index,
             task_name=record["task_name"],
-            task_prompt=record["task"],
+            task_prompt=task_prompt,
             raw_task_record=record,
         )
     selector = []
@@ -433,6 +443,50 @@ def select_episodes(
     if not rows:
         raise ValueError("No episodes selected.")
     return rows
+
+
+def validate_rgbd_task_text_surface(
+    dataset_root: Path,
+    *,
+    task_index: int | None = None,
+    episodes: list[dict[str, Any]] | None = None,
+) -> None:
+    tasks_path = dataset_root / "meta/tasks.jsonl"
+    task_rows = load_jsonl(tasks_path)
+    if task_index is not None:
+        task_rows = [row for row in task_rows if int(row["task_index"]) == task_index]
+    if not task_rows:
+        selector = f" for task-{task_index:04d}" if task_index is not None else ""
+        raise ValueError(f"No task metadata with natural-language text found{selector} under {tasks_path}.")
+    missing_text = [int(row["task_index"]) for row in task_rows if not str(row.get("task") or "").strip()]
+    if missing_text:
+        raise ValueError(f"Missing natural-language task text for task index(es): {missing_text}.")
+
+    if episodes is None:
+        episodes_path = dataset_root / "meta/episodes.jsonl"
+        if not episodes_path.is_file():
+            raise FileNotFoundError(f"Missing episode metadata: {episodes_path}")
+        episodes = load_jsonl(episodes_path)
+        if task_index is not None:
+            episodes = [row for row in episodes if int(row["episode_index"]) // 10_000 == task_index]
+
+    missing_videos: list[str] = []
+    for row in episodes:
+        ep_idx = int(row["episode_index"])
+        current_task = ep_idx // 10_000 if task_index is None else task_index
+        for video_key in REQUIRED_A2C2_VIDEO_KEYS:
+            path = dataset_root / "videos" / f"task-{current_task:04d}" / video_key / f"episode_{ep_idx:08d}.mp4"
+            if not path.is_file():
+                missing_videos.append(str(path))
+                if len(missing_videos) >= 10:
+                    break
+        if len(missing_videos) >= 10:
+            break
+    if missing_videos:
+        preview = "\n".join(f"  - {path}" for path in missing_videos)
+        raise FileNotFoundError(
+            "A2C2 requires three RGB and three depth videos for every selected episode. Missing:\n" + preview
+        )
 
 
 def expected_episode_rows(episode: dict[str, Any], max_frames_per_episode: int | None) -> int:
@@ -1189,6 +1243,7 @@ def write_manifests(
         "latent_storage_layout": "one parquet per episode under latent/data/task-XXXX; each file has only the z column",
         "row_alignment": "Main parquet rows and latent parquet rows match by episode and row order.",
         "z_source": Z_SOURCE_DESCRIPTION,
+        "required_a2c2_inputs": ["rgb", "depth", "task_language"],
         "full_action_inference_run": True,
         "fused_action_latent_inference": True,
         "episodes": episode_summaries,
@@ -1209,6 +1264,7 @@ def write_manifests(
         "storage_layout": root_manifest["latent_storage_layout"],
         "row_alignment": root_manifest["row_alignment"],
         "z_source": Z_SOURCE_DESCRIPTION,
+        "required_a2c2_inputs": root_manifest["required_a2c2_inputs"],
         "episodes": episode_summaries,
     }
     atomic_write_json(args.output_root / "latent" / "meta" / "manifest.json", latent_manifest)
@@ -1238,6 +1294,7 @@ def main() -> None:
         parse_episode_filter(args.episodes),
         args.max_episodes,
     )
+    validate_rgbd_task_text_surface(args.source_root, task_index=task_info.task_index, episodes=selected_episodes)
 
     prepare_output_root(args)
     prepare_metadata(args, task_info, selected_episodes)

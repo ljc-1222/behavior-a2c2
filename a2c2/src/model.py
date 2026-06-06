@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import math
+from typing import Any
 
 import torch
 from torch import Tensor, nn
+
+
+REQUIRED_A2C2_FEATURE_FLAGS = ("use_rgb", "use_depth", "use_language")
+REQUIRED_A2C2_FEATURE_LABELS = {
+    "use_rgb": "RGB",
+    "use_depth": "depth",
+    "use_language": "task language",
+}
 
 
 @dataclass(frozen=True)
@@ -18,9 +27,9 @@ class A2C2CorrectionHeadConfig:
     use_base_policy_z: bool = True
     time_dim: int = 2
 
-    use_rgb: bool = False
-    use_depth: bool = False
-    use_language: bool = False
+    use_rgb: bool = True
+    use_depth: bool = True
+    use_language: bool = True
     use_cam_rel_poses: bool = False
     use_task_info: bool = False
     use_policy_infer_ms: bool = False
@@ -50,6 +59,48 @@ class A2C2CorrectionHeadConfig:
     dim_feedforward: int = 2048
     dropout: float = 0.1
     mlp_hidden_dim: int = 1024
+
+
+def validate_required_a2c2_features(
+    cfg: A2C2CorrectionHeadConfig,
+    *,
+    context: str = "A2C2 config",
+) -> None:
+    disabled = [flag for flag in REQUIRED_A2C2_FEATURE_FLAGS if not getattr(cfg, flag)]
+    if disabled:
+        labels = ", ".join(REQUIRED_A2C2_FEATURE_LABELS[flag] for flag in disabled)
+        raise ValueError(
+            f"{context} must enable RGB, depth, and task-language inputs. "
+            f"Disabled required feature(s): {labels}. "
+            "Pre-RGBD/task-language A2C2 artifacts are unsupported."
+        )
+
+
+def config_from_checkpoint_payload(
+    payload: dict[str, Any],
+    *,
+    context: str = "A2C2 checkpoint",
+) -> A2C2CorrectionHeadConfig:
+    raw = payload.get("config")
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{context} is missing a serialized A2C2 config. "
+            "Pre-RGBD/task-language A2C2 artifacts are unsupported."
+        )
+
+    missing = [flag for flag in REQUIRED_A2C2_FEATURE_FLAGS if flag not in raw]
+    if missing:
+        labels = ", ".join(REQUIRED_A2C2_FEATURE_LABELS[flag] for flag in missing)
+        raise ValueError(
+            f"{context} config is missing required feature flag(s): {labels}. "
+            "Pre-RGBD/task-language A2C2 artifacts are unsupported."
+        )
+
+    valid_keys = {field.name for field in fields(A2C2CorrectionHeadConfig)}
+    filtered = {key: value for key, value in raw.items() if key in valid_keys}
+    cfg = A2C2CorrectionHeadConfig(**filtered)
+    validate_required_a2c2_features(cfg, context=f"{context} config")
+    return cfg
 
 
 def _sinusoidal_positions(length: int, dim: int) -> Tensor:
@@ -254,6 +305,7 @@ class A2C2CorrectionHead(nn.Module):
         super().__init__()
         self.config = config or A2C2CorrectionHeadConfig()
         cfg = self.config
+        validate_required_a2c2_features(cfg)
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.dim_model))
         self.type_embedding = nn.Parameter(torch.zeros(self._type_count(cfg), cfg.dim_model))

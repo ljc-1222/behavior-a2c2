@@ -89,9 +89,6 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Use base-policy latent z during training. Pass --no-use-latent to train without latent.",
     )
-    parser.add_argument("--use-rgb", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--use-depth", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--use-language", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--use-cam-rel-poses", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--use-task-info", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--use-policy-infer-ms", action=argparse.BooleanOptionalAction, default=True)
@@ -105,6 +102,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument("--wandb-mode", default="online", choices=("online", "offline", "disabled"))
+    parser.set_defaults(use_rgb=True, use_depth=True, use_language=True)
     return parser.parse_args()
 
 
@@ -285,12 +283,9 @@ def main() -> None:
     print(f"Episodes: train={len(train_pairs)} val={len(val_pairs)}")
     print(f"Image size: {args.image_size}")
     print(f"Episode batches: batch_size={args.batch_size} batches_per_episode={args.batches_per_episode}")
-    language_instruction = args.language_instruction
-    if args.use_language and language_instruction is None:
-        language_instruction = resolve_language_instruction(dataset_root, args.task_dir)
-    if args.use_language:
-        args.language_instruction = language_instruction
-        print(f"Language instruction: {language_instruction}")
+    language_instruction = args.language_instruction or resolve_language_instruction(dataset_root, args.task_dir)
+    args.language_instruction = language_instruction
+    print(f"Language instruction: {language_instruction}")
 
     cfg = A2C2CorrectionHeadConfig(
         use_base_policy_z=args.use_latent,

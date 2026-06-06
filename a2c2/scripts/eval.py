@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import fields
 from pathlib import Path
 import sys
 
@@ -24,7 +23,7 @@ from dataset import (  # noqa: E402
     resolve_language_instruction,
     split_episode_pairs,
 )
-from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig  # noqa: E402
+from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig, config_from_checkpoint_payload  # noqa: E402
 
 
 DEFAULT_TASK18_DATASET_ROOT = Path("a2c2_dataset/tidying_bedroom_pi05-b1kpt50-cs32_h32_v1")
@@ -61,10 +60,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def config_from_checkpoint(payload: dict) -> A2C2CorrectionHeadConfig:
-    raw = payload.get("config", {})
-    valid_keys = {field.name for field in fields(A2C2CorrectionHeadConfig)}
-    filtered = {key: value for key, value in raw.items() if key in valid_keys}
-    return A2C2CorrectionHeadConfig(**filtered)
+    return config_from_checkpoint_payload(payload, context="A2C2 eval checkpoint")
 
 
 def image_size_from_checkpoint(payload: dict, raw_image_size: int | None) -> int:
@@ -132,11 +128,9 @@ def main() -> None:
     dataset_root = resolve_dataset_root(args.dataset_root)
     checkpoint_args = payload.get("args", {})
     pairs = discover_episode_pairs(dataset_root, args.task_dir)
-    language_instruction = args.language_instruction
-    if cfg.use_language and language_instruction is None:
-        language_instruction = checkpoint_args.get("language_instruction")
-        if language_instruction is None:
-            language_instruction = resolve_language_instruction(dataset_root, args.task_dir)
+    language_instruction = args.language_instruction or checkpoint_args.get("language_instruction")
+    if language_instruction is None:
+        language_instruction = resolve_language_instruction(dataset_root, args.task_dir)
     dataset_kwargs = build_dataset_kwargs(
         cfg,
         image_size,

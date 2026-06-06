@@ -56,8 +56,13 @@ Where:
 
 - `a_base[t, k]` is the PI0.5 OpenPI-COMET baseline action at chunk offset `k`.
 - `z[t]` is the baseline policy latent extracted from the same source frame.
-- `o[t+k]` and `expert_action[t+k]` come from BEHAVIOR demonstrations.
+- `o[t+k]` includes the latest RGBD observation and task-language instruction
+  from BEHAVIOR demonstrations.
 - `delta_a[t, k] = expert_action[t+k] - a_base[t, k]` is the supervised target.
+
+The current implementation requires RGB, depth, and task-language inputs.
+Checkpoints that omit `use_rgb`, `use_depth`, or `use_language`, or set any of
+those flags to false, are pre-RGBD/task-language artifacts and are unsupported.
 
 ## Dataset Source
 
@@ -215,6 +220,10 @@ python a2c2/scripts/create_dataset.py \
 The downloader uses Hugging Face snapshot allow patterns for repo metadata plus
 that variant directory, so other variants are not downloaded by default.
 
+The downloaded dataset root is validated before the command exits. It must
+include natural-language task text plus three RGB and three depth videos for
+every episode; roots without that RGBD/task-language surface are rejected.
+
 Download destination:
 
 ```text
@@ -251,6 +260,9 @@ python -m pip install huggingface_hub
 Most users should download the released dataset. Rebuild only when changing the
 input demos, baseline checkpoint, OpenPI config, task selection, or feature
 extraction code.
+
+Rebuild mode performs the same RGBD/task-language surface check on the selected
+BEHAVIOR source episodes before writing A2C2 artifacts.
 
 For real OpenPI/COMET inference, run the build through the `openpi-comet` `uv`
 environment created by the outer `setup.sh`:
@@ -366,7 +378,7 @@ export UV_CACHE_DIR="$B1K_ROOT/.uv-cache"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.35
 export JAX_COMPILATION_CACHE_DIR="$B1K_ROOT/.cache/jax"
-export A2C2_CHECKPOINT="${A2C2_CHECKPOINT:-$B1K_ROOT/a2c2/ckpt/model_latent.pt}"
+export A2C2_CHECKPOINT="${A2C2_CHECKPOINT:-$B1K_ROOT/a2c2/runs/task18_wandb_bs128_w8_bpe4/latest.pt}"
 
 uv run --no-sync ../a2c2/scripts/serve_a2c2_b1k.py \
   --task-name="$B1K_TASK_NAME" \
@@ -394,10 +406,14 @@ xvfb-run -a -s "-screen 0 1280x720x24" python OmniGibson/omnigibson/learning/eva
   task.name="$B1K_TASK_NAME" \
   log_path="$RUN_LOG" \
   model.host=127.0.0.1 \
-  env_wrapper._target_=omnigibson.learning.wrappers.RGBWrapper \
+  env_wrapper._target_=omnigibson.learning.wrappers.DefaultWrapper \
   eval_instance_ids="[0]" \
   write_video=true
 ```
+
+Use `DefaultWrapper` for online A2C2 because it exposes the `depth_linear`
+camera modalities. `RGBWrapper` is a baseline-only wrapper and does not provide
+the RGBD observation surface required by new A2C2 checkpoints.
 
 Online data flow:
 
@@ -407,26 +423,21 @@ source frame t:
   cache actions[0:32], valid mask, prefix_z, log1p(policy_infer_ms)
 
 each environment step t+k:
-  read latest robot_r1::proprio and optional online features
+  read latest robot_r1::proprio, RGBD camera frames, and task-language tokens
   selected_base_action = cached actions[k]
   time_feature = [sin(2*pi*k/(H-1)), cos(2*pi*k/(H-1))]
   residual = A2C2(obs[t+k], selected_base_action, cached chunk, prefix_z, time_feature)
   execute selected_base_action + residual
 ```
 
-`serve_a2c2_b1k.py` supports both task18 checkpoints currently present under
-`a2c2/ckpt/`:
+`serve_a2c2_b1k.py` accepts only RGBD + task-language A2C2 checkpoints. The
+checkpoint loader rejects older artifacts whose serialized config does not
+explicitly enable `use_rgb`, `use_depth`, and `use_language`. Earlier
+pre-RGBD/task-language artifacts are not supported online.
 
-- `model_latent.pt` uses `prefix_z` and requires the active OpenPI patches.
-- `model_no_latent.pt` sets `use_base_policy_z=False` and calls normal
-  `Policy.infer(...)`.
-
-The current task18 checkpoints use state, base action chunk, selected base
-action, time feature, and optionally `prefix_z`; they do not require online
-RGB/depth/camera/task/language tensors. If a future checkpoint enables those
-flags, the online wrapper will read them from the current BEHAVIOR observation
-and fail fast when a required feature is missing. Use
-`--allow-missing-online-features` only for zero-filled smoke tests.
+If a checkpoint also enables camera-relative poses, privileged task-info, or
+policy timing, the online wrapper reads those fields from the current BEHAVIOR
+observation and fails fast when any enabled feature is missing.
 
 Fast online smoke test:
 
@@ -437,11 +448,12 @@ uv run --no-sync python ../a2c2/scripts/test_online_eval.py
 
 `test_online_eval.py` first checks that the pinned `openpi-comet` exposes
 `Policy.infer_with_prefix_z(...)` and `Pi0.sample_actions(...,
-return_prefix_z=True)`, then runs a fake BEHAVIOR environment for five steps.
-It checks that base chunks are fetched at environment steps 0 and 3, correction
-offsets are 0, 1, 2, 0, 1, the correction head receives tensors with the online
-evaluation shapes, and the fake environment receives `base_action + residual`
-for every step.
+return_prefix_z=True)`, verifies that a legacy no-RGBD/task-language checkpoint
+config is rejected, then runs a fake BEHAVIOR environment for five steps. It
+checks that base chunks are fetched at environment steps 0 and 3, correction
+offsets are 0, 1, 2, 0, 1, the correction head receives RGBD, language, camera,
+task-info, and policy-timing tensors with the online evaluation shapes, and the
+fake environment receives `base_action + residual` for every step.
 
 ## OpenPI Integration Notes
 

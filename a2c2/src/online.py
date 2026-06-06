@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 import logging
 import math
 from pathlib import Path
@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from dataset import DEPTH_VIDEO_COLUMNS, preprocess_video_frame, tokenize_language_instruction
-from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig
+from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig, config_from_checkpoint_payload
 from openpi.shared.eval_b1k_wrapper import B1KPolicyWrapper
 
 
@@ -43,10 +43,7 @@ class _ActiveChunk:
 
 
 def config_from_checkpoint(payload: dict[str, Any]) -> A2C2CorrectionHeadConfig:
-    raw = payload.get("config", {})
-    valid_keys = {field.name for field in fields(A2C2CorrectionHeadConfig)}
-    filtered = {key: value for key, value in raw.items() if key in valid_keys}
-    return A2C2CorrectionHeadConfig(**filtered)
+    return config_from_checkpoint_payload(payload, context="A2C2 online checkpoint")
 
 
 def image_size_from_checkpoint(payload: dict[str, Any], explicit_image_size: int | None) -> int:
@@ -124,7 +121,6 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
         a2c2_image_size: int | None = None,
         a2c2_language_instruction: str | None = None,
         a2c2_correction_scale: float = 1.0,
-        allow_missing_online_features: bool = False,
         task_name: str = "turning_on_radio",
         control_mode: str = "receeding_horizon",
         max_len: int = 32,
@@ -158,8 +154,6 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
         self.a2c2_config = config_from_checkpoint(payload)
         self.a2c2_image_size = image_size_from_checkpoint(payload, a2c2_image_size)
         self.a2c2_correction_scale = float(a2c2_correction_scale)
-        self.strict_online_features = not allow_missing_online_features
-        self._missing_feature_warnings: set[str] = set()
 
         if self.a2c2_config.action_dim != 23:
             raise ValueError(f"B1K online evaluation expects action_dim=23, got {self.a2c2_config.action_dim}.")
@@ -171,17 +165,13 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
         self.a2c2_model.eval()
 
         self.a2c2_language_instruction = a2c2_language_instruction or self.task_prompt
-        if self.a2c2_config.use_language:
-            tokens, token_mask = tokenize_language_instruction(
-                self.a2c2_language_instruction,
-                max_length=self.a2c2_config.language_max_length,
-                vocab_size=self.a2c2_config.language_vocab_size,
-            )
-            self._language_tokens = tokens
-            self._language_token_mask = token_mask
-        else:
-            self._language_tokens = None
-            self._language_token_mask = None
+        tokens, token_mask = tokenize_language_instruction(
+            self.a2c2_language_instruction,
+            max_length=self.a2c2_config.language_max_length,
+            vocab_size=self.a2c2_config.language_vocab_size,
+        )
+        self._language_tokens = tokens
+        self._language_token_mask = token_mask
 
         self._active_chunk: _ActiveChunk | None = None
         self._last_policy_prompt = self.task_prompt
@@ -231,7 +221,7 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
             if not hasattr(self.policy, "infer_with_prefix_z"):
                 raise RuntimeError(
                     "A2C2 checkpoint requires base_policy_z, but the base policy does not expose "
-                    "infer_with_prefix_z. Use a no-latent checkpoint or serve with the patched OpenPI policy."
+                    "infer_with_prefix_z. Serve with the patched OpenPI policy."
                 )
             action = self.policy.infer_with_prefix_z(batch)
             if "prefix_z" not in action:
@@ -322,8 +312,6 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
         if cfg.use_depth:
             batch["depth_images"] = self._tensor(self._depth_images(raw_obs))
         if cfg.use_language:
-            assert self._language_tokens is not None
-            assert self._language_token_mask is not None
             batch["language_tokens"] = self._tensor(self._language_tokens[None], dtype=torch.long)
             batch["language_token_mask"] = self._tensor(self._language_token_mask[None], dtype=torch.bool)
         if cfg.use_cam_rel_poses:
@@ -430,12 +418,7 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
         return self._missing_array("task_info", (self.a2c2_config.task_info_dim,))
 
     def _missing_array(self, name: str, shape: tuple[int, ...]) -> np.ndarray:
-        if self.strict_online_features:
-            raise KeyError(
-                f"A2C2 checkpoint requires {name}, but the current online observation does not provide it. "
-                "Use a matching env wrapper/checkpoint or pass --allow-missing-online-features for a zero-filled smoke run."
-            )
-        if name not in self._missing_feature_warnings:
-            logger.warning("A2C2 online feature %s is missing; using zeros because strict mode is disabled.", name)
-            self._missing_feature_warnings.add(name)
-        return np.zeros(shape, dtype=np.float32)
+        raise KeyError(
+            f"A2C2 checkpoint requires {name}, but the current online observation does not provide it. "
+            "Use an online BEHAVIOR wrapper/checkpoint that supplies every enabled RGBD/task-language feature."
+        )

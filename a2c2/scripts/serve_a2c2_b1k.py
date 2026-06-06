@@ -65,13 +65,12 @@ class Args:
     temporal_ensemble_max: int = 3
     fine_grained_level: int = 0
 
-    # A2C2 correction-head checkpoint.
-    a2c2_checkpoint: Path = Path("../a2c2/ckpt/model_latent.pt")
+    # A2C2 RGBD + task-language correction-head checkpoint.
+    a2c2_checkpoint: Path = Path("../a2c2/runs/task18_wandb_bs128_w8_bpe4/latest.pt")
     a2c2_device: str = "auto"
     a2c2_image_size: int | None = None
     a2c2_language_instruction: str | None = None
     a2c2_correction_scale: float = 1.0
-    allow_missing_online_features: bool = False
 
 
 def create_policy(args: Args) -> _policy.Policy:
@@ -116,7 +115,6 @@ def main(args: Args) -> None:
         a2c2_image_size=args.a2c2_image_size,
         a2c2_language_instruction=args.a2c2_language_instruction,
         a2c2_correction_scale=args.a2c2_correction_scale,
-        allow_missing_online_features=args.allow_missing_online_features,
     )
 
     hostname = socket.gethostname()

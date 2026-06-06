@@ -484,12 +484,12 @@ class A2C2RandomSampleDataset(IterableDataset):
         total_samples: int | None = None,
         *,
         batches_per_episode: int = 1,
-        use_rgb: bool = False,
-        use_depth: bool = False,
+        use_rgb: bool = True,
+        use_depth: bool = True,
         image_size: int = 224,
         depth_preprocess: str = "normalized",
         depth_max_m: float = DEFAULT_DEPTH_MAX_M,
-        use_language: bool = False,
+        use_language: bool = True,
         language_instruction: str | None = None,
         language_vocab_size: int = 4096,
         language_max_length: int = 32,
@@ -530,6 +530,18 @@ class A2C2RandomSampleDataset(IterableDataset):
             raise ValueError("depth_preprocess must be either 'normalized' or 'hha'.")
         if self.depth_max_m <= 0.0:
             raise ValueError("depth_max_m must be positive.")
+        missing_required = []
+        if not self.use_rgb:
+            missing_required.append("RGB")
+        if not self.use_depth:
+            missing_required.append("depth")
+        if not self.use_language:
+            missing_required.append("task language")
+        if missing_required:
+            names = ", ".join(missing_required)
+            raise ValueError(
+                f"A2C2 datasets must include RGBD and task-language inputs; disabled required feature(s): {names}."
+            )
         if self.use_language and not self.language_instruction:
             raise ValueError("use_language=True requires a language_instruction.")
         if self.use_language:
