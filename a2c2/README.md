@@ -406,13 +406,15 @@ xvfb-run -a -s "-screen 0 1280x720x24" python OmniGibson/omnigibson/learning/eva
   task.name="$B1K_TASK_NAME" \
   log_path="$RUN_LOG" \
   model.host=127.0.0.1 \
-  env_wrapper._target_=omnigibson.learning.wrappers.DefaultWrapper \
+  env_wrapper._target_=omnigibson.learning.wrappers.A2C2Wrapper \
   eval_instance_ids="[0]" \
   write_video=true
 ```
 
-Use `DefaultWrapper` for online A2C2 because it exposes the `depth_linear`
-camera modalities. `RGBWrapper` is a baseline-only wrapper and does not provide
+Use `A2C2Wrapper` for online A2C2 because it exposes the `depth_linear` camera
+modalities and adds `observation.task_info` from the same
+`env.task.get_obs(env)["low_dim"]` source that BEHAVIOR replay writes into the
+training parquet. `RGBWrapper` is a baseline-only wrapper and does not provide
 the RGBD observation surface required by new A2C2 checkpoints.
 
 Online data flow:

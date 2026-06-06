@@ -188,7 +188,7 @@ class FakeBehaviorEnv:
                 dtype=np.float32,
             ),
             "robot_r1::cam_rel_poses": np.full((21,), float(self.step_index), dtype=np.float32),
-            "observation.task_info": np.full((TASK_INFO_DIM,), float(self.step_index), dtype=np.float32),
+            "task::low_dim": np.full((TASK_INFO_DIM + 12,), float(self.step_index), dtype=np.float32),
             "task_id": np.array([18], dtype=np.int64),
         }
 
@@ -316,6 +316,7 @@ def run_smoke() -> None:
     print("online A2C2 smoke test passed")
     print("OpenPI prefix latent API surface checked")
     print("legacy no-RGBD/task-language checkpoint rejection checked")
+    print("task::low_dim task-info source and truncation checked")
     print(f"base policy calls at env steps: {[call['state0'] for call in base_policy.calls]}")
     print(f"correction offsets: {expected_offsets}")
     print(f"env actions checked: {len(env.actions)}")

@@ -400,7 +400,7 @@ Output videos are written under `$RUN_LOG/videos/`.
 Online A2C2 uses the same BEHAVIOR websocket client command as the baseline
 section, but it must use an environment wrapper that exposes depth observations.
 Replace Terminal 1 with the A2C2 server below and use
-`omnigibson.learning.wrappers.DefaultWrapper` in Terminal 2 instead of
+`omnigibson.learning.wrappers.A2C2Wrapper` in Terminal 2 instead of
 `RGBWrapper`. The server keeps the OpenPI-COMET base policy in the loop, caches
 each base action chunk and base-policy latent, then runs the A2C2 residual head
 at every environment step using the latest RGBD observation and task-language
@@ -436,11 +436,13 @@ Latent checkpoints require the active `openpi-comet` patches in
 For Terminal 2, keep the baseline command structure but change the wrapper:
 
 ```bash
-env_wrapper._target_=omnigibson.learning.wrappers.DefaultWrapper
+env_wrapper._target_=omnigibson.learning.wrappers.A2C2Wrapper
 ```
 
-`DefaultWrapper` enables the `depth_linear` camera modalities needed by online
-A2C2. `RGBWrapper` is only sufficient for the baseline OpenPI evaluation.
+`A2C2Wrapper` enables the `depth_linear` camera modalities needed by online A2C2
+and adds `observation.task_info` from BEHAVIOR's task low-dimensional
+observation source, matching the training parquet field. `RGBWrapper` is only
+sufficient for the baseline OpenPI evaluation.
 
 Fast online smoke test:
 

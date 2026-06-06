@@ -27,6 +27,7 @@ DEPTH_CAMERA_KEYS = (
 )
 TASK_INFO_KEYS = (
     "observation.task_info",
+    "task::low_dim",
     "task_info",
     "robot_r1::task_info",
 )
