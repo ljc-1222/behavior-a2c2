@@ -803,7 +803,7 @@ print_next_steps() {
 Setup finished.
 ============================================================
 
-Baseline evaluation commands are documented in:
+Baseline and online A2C2 evaluation commands are documented in:
   $ROOT_DIR/README.md
 EOF
 }

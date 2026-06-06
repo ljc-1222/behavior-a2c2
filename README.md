@@ -22,7 +22,10 @@ b1k/
   a2c2/
     README.md              # dataset, training, eval, and reference notes
     scripts/
+      serve_a2c2_b1k.py    # online BEHAVIOR websocket server with A2C2 residuals
+      test_online_eval.py  # fake-env online residual smoke test
     src/
+      online.py            # online B1K/OpenPI A2C2 wrapper
     openpi_modification/   # reference-only OpenPI A2C2 patches
 ```
 
@@ -306,6 +309,8 @@ python a2c2/scripts/train.py \
 
 ## Evaluate The Correction Head
 
+Offline dataset evaluation:
+
 ```bash
 python a2c2/scripts/eval.py \
   --dataset-root a2c2_dataset/tidying_bedroom_pi05-b1kpt50-cs32_h32_v1 \
@@ -382,6 +387,58 @@ xvfb-run -a -s "-screen 0 1280x720x24" python OmniGibson/omnigibson/learning/eva
 ```
 
 Output videos are written under `$RUN_LOG/videos/`.
+
+## Online A2C2 BEHAVIOR Evaluation
+
+Online A2C2 uses the same BEHAVIOR websocket client command as the baseline
+section. Replace only Terminal 1 with the A2C2 server below. The server keeps
+the OpenPI-COMET base policy in the loop, caches each base action chunk and
+base-policy latent, then runs the A2C2 residual head at every environment step
+using the latest observation before returning `base_action + residual`.
+
+```bash
+cd "$B1K_ROOT/openpi-comet"
+export PATH="$HOME/.local/bin:$CONDA_DIR/bin:$PATH"
+export UV_CACHE_DIR="$B1K_ROOT/.uv-cache"
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.35
+export JAX_COMPILATION_CACHE_DIR="$B1K_ROOT/.cache/jax"
+export A2C2_CHECKPOINT="${A2C2_CHECKPOINT:-$B1K_ROOT/a2c2/ckpt/model_latent.pt}"
+
+uv run --no-sync ../a2c2/scripts/serve_a2c2_b1k.py \
+  --task-name="$B1K_TASK_NAME" \
+  --control-mode=receeding_horizon \
+  --max-len=32 \
+  --a2c2-checkpoint="$A2C2_CHECKPOINT" \
+  policy:checkpoint \
+  --policy.config=pi05_b1k-base \
+  --policy.dir="./checkpoints/$B1K_CHECKPOINT_NAME"
+```
+
+Use `a2c2/ckpt/model_no_latent.pt` with `--a2c2-checkpoint` to run a checkpoint
+that does not require `prefix_z`. The latent checkpoint requires the active
+`openpi-comet` patches in `src/openpi/models/pi0.py` and
+`src/openpi/policies/policy.py`.
+
+The checked-in task18 checkpoints use state, base action chunk, selected base
+action, time feature, and optionally `prefix_z`, so `RGBWrapper` is sufficient
+for the BEHAVIOR command above. Future checkpoints trained with online RGB,
+depth, camera-pose, task-info, language, or policy-timing features must be run
+with matching online observations. `--allow-missing-online-features` exists only
+for zero-filled smoke runs.
+
+Fast online smoke test:
+
+```bash
+cd "$B1K_ROOT/openpi-comet"
+uv run --no-sync python ../a2c2/scripts/test_online_eval.py
+```
+
+The smoke test uses a fake BEHAVIOR environment, a fake base policy, and a
+deterministic A2C2 head. It verifies that a new base chunk is requested at the
+correct steps, each residual sees the latest observation in the expected tensor
+shapes, and the action sent to the environment is exactly `base_action +
+residual`.
 
 ## Submodule Maintenance
 

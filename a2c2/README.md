@@ -25,21 +25,27 @@ a2c2/
     create_dataset.py
     train.py
     eval.py
+    serve_a2c2_b1k.py
+    test_online_eval.py
   src/
     dataset.py
     model.py
+    online.py
   openpi_modification/
     pi0.py
     policy.py
 ```
 
-`openpi_modification/` is reference-only. It is not imported by the current
-training code and is not applied by `../setup.sh`.
+`openpi_modification/` keeps reference copies of the OpenPI changes needed to
+return PI0.5 prefix latents. The active online path uses the patched
+`../openpi-comet` submodule plus `src/online.py`.
 
 ## Method Summary
 
-A2C2 trains a correction head on top of a frozen baseline policy instead of
-retraining the whole policy. For source frame `t` and action chunk offset `k`:
+A2C2 follows "Leave No Observation Behind: Real-time Correction for VLA Action
+Chunks" (arXiv:2509.23224, https://arxiv.org/abs/2509.23224). It trains a
+correction head on top of a frozen baseline policy instead of retraining the
+whole policy. For source frame `t` and action chunk offset `k`:
 
 ```text
 a_exec[t+k] = a_base[t, k] + delta_a[t, k]
@@ -332,7 +338,7 @@ python a2c2/scripts/train.py \
   --no-pretrained-depth
 ```
 
-## Evaluate
+## Offline Evaluate
 
 ```bash
 python a2c2/scripts/eval.py \
@@ -344,33 +350,104 @@ python a2c2/scripts/eval.py \
   --batch-size 16
 ```
 
-## Reference OpenPI Patches
+## Online BEHAVIOR Evaluate
 
-`openpi_modification/` contains reference copies for a future online A2C2
-integration path:
+Run online evaluation with the normal BEHAVIOR websocket client and the A2C2
+server. The A2C2 server calls the base OpenPI-COMET policy for a full action
+chunk, caches the chunk plus `prefix_z`, then corrects the selected chunk action
+at every environment step with the latest observation.
 
-- `pi0.py` shows how to expose `return_prefix_z` from PI0 action sampling.
-- `policy.py` shows how to add `Policy.infer_with_prefix_z(...)`.
+Terminal 1:
 
-These files are not active code in the current workspace. The pinned
-`openpi-comet` submodule currently contains only the baseline B1K websocket
-compatibility patches:
+```bash
+cd "$B1K_ROOT/openpi-comet"
+export PATH="$HOME/.local/bin:$CONDA_DIR/bin:$PATH"
+export UV_CACHE_DIR="$B1K_ROOT/.uv-cache"
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.35
+export JAX_COMPILATION_CACHE_DIR="$B1K_ROOT/.cache/jax"
+export A2C2_CHECKPOINT="${A2C2_CHECKPOINT:-$B1K_ROOT/a2c2/ckpt/model_latent.pt}"
 
-```text
-scripts/serve_b1k.py
-src/openpi/policies/b1k_policy.py
-src/openpi/shared/b1k_network_utils.py
+uv run --no-sync ../a2c2/scripts/serve_a2c2_b1k.py \
+  --task-name="$B1K_TASK_NAME" \
+  --control-mode=receeding_horizon \
+  --max-len=32 \
+  --a2c2-checkpoint="$A2C2_CHECKPOINT" \
+  policy:checkpoint \
+  --policy.config=pi05_b1k-base \
+  --policy.dir="./checkpoints/$B1K_CHECKPOINT_NAME"
 ```
 
-The pinned submodule does not include an online A2C2 websocket server. The
-dataset builder extracts `a2c2.base_policy_z` directly from the loaded
-OpenPI/COMET model internals, so dataset extraction and correction-head training
-do not require applying the reference files.
+Terminal 2 is the same BEHAVIOR command documented in the outer `README.md`
+baseline evaluation section:
 
-To make online A2C2 evaluation real later:
+```bash
+cd "$B1K_ROOT/BEHAVIOR-1K"
+source "$CONDA_DIR/etc/profile.d/conda.sh"
+conda activate "$B1K_CONDA_ENV"
 
-1. Port the reference changes into `openpi-comet`.
-2. Add and test an online A2C2 websocket server or wrapper.
-3. Commit and push those changes in the `openpi-comet` submodule.
-4. Update the outer b1k gitlink.
-5. Document the new online evaluation command in the outer `README.md`.
+RUN_LOG="$B1K_ROOT/BEHAVIOR-1K/output/${B1K_TASK_NAME}_a2c2_$(date -u +%Y%m%d_%H%M%S)"
+mkdir -p "$RUN_LOG"
+
+xvfb-run -a -s "-screen 0 1280x720x24" python OmniGibson/omnigibson/learning/eval.py \
+  policy=websocket \
+  task.name="$B1K_TASK_NAME" \
+  log_path="$RUN_LOG" \
+  model.host=127.0.0.1 \
+  env_wrapper._target_=omnigibson.learning.wrappers.RGBWrapper \
+  eval_instance_ids="[0]" \
+  write_video=true
+```
+
+Online data flow:
+
+```text
+source frame t:
+  OpenPI-COMET infer_with_prefix_z(obs[t])
+  cache actions[0:32], valid mask, prefix_z, log1p(policy_infer_ms)
+
+each environment step t+k:
+  read latest robot_r1::proprio and optional online features
+  selected_base_action = cached actions[k]
+  time_feature = [sin(2*pi*k/(H-1)), cos(2*pi*k/(H-1))]
+  residual = A2C2(obs[t+k], selected_base_action, cached chunk, prefix_z, time_feature)
+  execute selected_base_action + residual
+```
+
+`serve_a2c2_b1k.py` supports both task18 checkpoints currently present under
+`a2c2/ckpt/`:
+
+- `model_latent.pt` uses `prefix_z` and requires the active OpenPI patches.
+- `model_no_latent.pt` sets `use_base_policy_z=False` and calls normal
+  `Policy.infer(...)`.
+
+The current task18 checkpoints use state, base action chunk, selected base
+action, time feature, and optionally `prefix_z`; they do not require online
+RGB/depth/camera/task/language tensors. If a future checkpoint enables those
+flags, the online wrapper will read them from the current BEHAVIOR observation
+and fail fast when a required feature is missing. Use
+`--allow-missing-online-features` only for zero-filled smoke tests.
+
+Fast online smoke test:
+
+```bash
+cd "$B1K_ROOT/openpi-comet"
+uv run --no-sync python ../a2c2/scripts/test_online_eval.py
+```
+
+`test_online_eval.py` runs a fake BEHAVIOR environment for five steps. It
+checks that base chunks are fetched at environment steps 0 and 3, correction
+offsets are 0, 1, 2, 0, 1, the correction head receives tensors with the online
+evaluation shapes, and the fake environment receives `base_action + residual`
+for every step.
+
+## OpenPI Integration Notes
+
+The active `../openpi-comet` submodule now contains the two runtime changes
+needed by online latent checkpoints:
+
+- `src/openpi/models/pi0.py` exposes `return_prefix_z` from PI0 action sampling.
+- `src/openpi/policies/policy.py` exposes `Policy.infer_with_prefix_z(...)`.
+
+`openpi_modification/` remains as a small reference copy of those changes for
+review and future rebases.
