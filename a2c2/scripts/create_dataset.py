@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Download or build the integrated A2C2 dataset.
 
-By default this script downloads the published Hugging Face dataset so a user
-only needs this one entrypoint to get the full A2C2 data locally.
+By default this script downloads only the published task18 dataset variant from
+Hugging Face. Use --download-all-variants only when every dataset variant is
+needed locally.
 
 For reproducibility, pass --build to recreate the dataset from BEHAVIOR-1K
 source demos and an OpenPI/COMET checkpoint. The built dataset keeps the
@@ -24,16 +25,18 @@ import time
 from typing import Any, Callable, Iterable
 
 
-WORKSPACE_ROOT = Path(__file__).resolve().parent
+A2C2_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_ROOT = A2C2_ROOT.parent
 DEFAULT_HF_REPO_ID = "ljc-1222/a2c2_dataset"
 DEFAULT_DOWNLOAD_ROOT = WORKSPACE_ROOT / "a2c2_dataset"
 DEFAULT_SOURCE_ROOT = WORKSPACE_ROOT / "BEHAVIOR-1K/OmniGibson/datasets/2025-challenge-demos"
 DEFAULT_OPENPI_ROOT = WORKSPACE_ROOT / "openpi-comet"
 DEFAULT_CHECKPOINT_DIR = DEFAULT_OPENPI_ROOT / "checkpoints/pi05-b1kpt50-cs32"
-DEFAULT_OUTPUT_ROOT = WORKSPACE_ROOT / "a2c2_dataset/tidying_bedroom_pi05-b1kpt50-cs32_h32_v1"
 DEFAULT_CONFIG_NAME = "pi05_b1k-base"
 DEFAULT_TASK_NAME = "tidying_bedroom"
 DEFAULT_VARIANT_SUFFIX = "pi05-b1kpt50-cs32_h32_v1"
+DEFAULT_DOWNLOAD_VARIANT = f"{DEFAULT_TASK_NAME}_{DEFAULT_VARIANT_SUFFIX}"
+DEFAULT_OUTPUT_ROOT = WORKSPACE_ROOT / "a2c2_dataset" / DEFAULT_DOWNLOAD_VARIANT
 DEFAULT_LATENT_COLUMN = "a2c2.base_policy_z"
 PROGRESS_DIRNAME = "a2c2_progress"
 
@@ -159,13 +162,23 @@ def parse_args() -> argparse.Namespace:
         "--download-root",
         type=Path,
         default=DEFAULT_DOWNLOAD_ROOT,
-        help="Local directory for the downloaded dataset repo. Used unless --build is set.",
+        help="Local directory for the selected downloaded dataset files. Used unless --build is set.",
     )
     parser.add_argument("--revision", default=None, help="Hugging Face revision/branch/commit to download.")
     parser.add_argument("--token", default=None, help="Optional Hugging Face token. Public downloads do not need one.")
     parser.add_argument("--force-download", action="store_true", help="Redownload files even if cached locally.")
     parser.add_argument("--local-files-only", action="store_true", help="Use only the local Hugging Face cache.")
     parser.add_argument("--max-workers", type=int, default=8, help="Parallel download workers for Hugging Face files.")
+    parser.add_argument(
+        "--download-variant",
+        default=DEFAULT_DOWNLOAD_VARIANT,
+        help="Dataset variant directory to download from the Hugging Face repo. Defaults to the task18 variant.",
+    )
+    parser.add_argument(
+        "--download-all-variants",
+        action="store_true",
+        help="Download every variant in the Hugging Face dataset repo instead of only --download-variant.",
+    )
     parser.add_argument("--source-root", type=Path, default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--openpi-root", type=Path, default=DEFAULT_OPENPI_ROOT)
     parser.add_argument("--checkpoint-dir", type=Path, default=DEFAULT_CHECKPOINT_DIR)
@@ -181,7 +194,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=f"BEHAVIOR task name. Defaults to {DEFAULT_TASK_NAME!r} unless --task-index is set.",
     )
-    parser.add_argument("--task-index", type=int, default=None, help="BEHAVIOR task index, e.g. 1 for task-0001.")
+    parser.add_argument("--task-index", type=int, default=None, help="BEHAVIOR task index. Defaults to task18 via --task-name tidying_bedroom; e.g. 18 for task-0018.")
     parser.add_argument("--action-horizon", type=int, default=32)
     parser.add_argument("--action-dim", type=int, default=23)
     parser.add_argument("--model-action-dim", type=int, default=32)
@@ -251,12 +264,30 @@ def download_published_dataset(args: argparse.Namespace) -> Path:
     download_root.mkdir(parents=True, exist_ok=True)
     print(f"Downloading A2C2 dataset from Hugging Face: {args.repo_id}")
     print(f"Destination: {download_root}")
+    allow_patterns = None
+    if not args.download_all_variants:
+        variant = args.download_variant.strip().strip("/")
+        if not variant:
+            raise ValueError("--download-variant must not be empty unless --download-all-variants is used.")
+        allow_patterns = [
+            ".gitattributes",
+            "README.md",
+            f"{variant}/**",
+        ]
+        print(f"Variant: {variant}")
+        if variant == DEFAULT_DOWNLOAD_VARIANT:
+            print("Download scope: task18 variant only")
+        else:
+            print("Download scope: selected variant only")
+    else:
+        print("Variant: all variants")
 
     local_path = snapshot_download(
         repo_id=args.repo_id,
         repo_type="dataset",
         revision=args.revision,
         local_dir=download_root,
+        allow_patterns=allow_patterns,
         token=args.token,
         force_download=args.force_download,
         local_files_only=args.local_files_only,

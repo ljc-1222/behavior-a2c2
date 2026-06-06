@@ -1,0 +1,10 @@
+[submodule "openpi-comet"]
+	path = openpi-comet
+	url = https://github.com/ljc-1222/openpi-comet.git
+	branch = dev/ljc-1222
+	shallow = true
+[submodule "BEHAVIOR-1K"]
+	path = BEHAVIOR-1K
+	url = https://github.com/ljc-1222/BEHAVIOR-1K.git
+	branch = dev/ljc-1222
+	shallow = true

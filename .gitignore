@@ -1,0 +1,30 @@
+# Python bytecode and local tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Editor settings
+.vscode/
+
+# Workspace package/runtime caches
+.cache/
+.uv-cache/
+.uv-python/
+tmp/
+
+# Local environments and app data
+.env
+.venv/
+venv/
+miniconda3/
+og-appdata/
+
+# Downloaded datasets, checkpoints, and training outputs
+a2c2_dataset/
+ckpt/
+a2c2/runs/
+wandb/
+
+# Logs
+*.log

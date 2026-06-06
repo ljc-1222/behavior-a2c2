@@ -5,16 +5,37 @@ set -Eeuo pipefail
 ROOT_DIR="${B1K_ROOT:-$(pwd -P)}"
 OPENPI_DIR="$ROOT_DIR/openpi-comet"
 BEHAVIOR_DIR="$ROOT_DIR/BEHAVIOR-1K"
-CONDA_DIR="$ROOT_DIR/miniconda3"
-CONDA_ENV="behavior"
+PROJECT_CONDA_DIR="$ROOT_DIR/miniconda3"
+DEFAULT_CONDA_DIR="${B1K_DEFAULT_CONDA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/b1k/miniforge3}"
+CONDA_DIR="${B1K_CONDA_DIR:-}"
+CONDA_EXE="${B1K_CONDA_EXE:-}"
+CONDA_ENV="${B1K_CONDA_ENV:-behavior}"
 
-OPENPI_COMMIT="4bb2aa7bb2da32614cac128ebb4b2f96eb66e5b5"
-BEHAVIOR_TAG="v3.7.2"
-BEHAVIOR_COMMIT="88454bd04f75dc57c00ab1f1a00bcde1ff505950"
-CHECKPOINT_NAME="pi05-b1kpt50-cs32"
+OPENPI_SUBMODULE_COMMIT="ec1dfe54757a731123869f6e5fe16e4a0a1cea0c"
+BEHAVIOR_SUBMODULE_COMMIT="398ff024db4c5b5e8be0fd38e632bc00579eb470"
+TASK_NAME="${B1K_TASK_NAME:-tidying_bedroom}"
+TASK_DIR="${B1K_TASK_DIR:-task-0018}"
+CHECKPOINT_NAME="${B1K_CHECKPOINT_NAME:-pi05-b1kpt50-cs32}"
 CHECKPOINT_REPO="https://huggingface.co/sunshk/openpi_comet"
 CHALLENGE_DEMOS_REPO_ID="behavior-1k/2025-challenge-demos"
-CHALLENGE_DEMOS_TASK="task-0001"
+CHALLENGE_DEMOS_TASK="${B1K_CHALLENGE_DEMOS_TASK:-$TASK_DIR}"
+CONDA_INSTALLER_URL="${B1K_CONDA_INSTALLER_URL:-https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh}"
+
+SYSTEM_PACKAGES="${B1K_SYSTEM_PACKAGES:-auto}"
+INSTALL_CONDA="${B1K_INSTALL_CONDA:-auto}"
+DOWNLOAD_BEHAVIOR_DATASET="${B1K_DOWNLOAD_BEHAVIOR_DATASET:-1}"
+DOWNLOAD_CHALLENGE_DEMOS="${B1K_DOWNLOAD_CHALLENGE_DEMOS:-0}"
+DOWNLOAD_CHECKPOINT="${B1K_DOWNLOAD_CHECKPOINT:-1}"
+UPDATE_SUBMODULES="${B1K_UPDATE_SUBMODULES:-1}"
+BEHAVIOR_SPARSE_CHECKOUT="${B1K_BEHAVIOR_SPARSE_CHECKOUT:-1}"
+
+APT_PACKAGES=(
+  git git-lfs curl wget ca-certificates
+  xvfb xauth ffmpeg
+  libxt6 libglu1-mesa libsm6 libxext6 libxrender1 libxi6
+  libxrandr2 libxcursor1 libxinerama1 libxfixes3
+  libxkbcommon-x11-0 libegl1 libgl1 libglvnd0
+)
 
 export UV_CACHE_DIR="$ROOT_DIR/.uv-cache"
 export UV_PYTHON_INSTALL_DIR="$ROOT_DIR/.uv-python"
@@ -24,10 +45,124 @@ export HF_HUB_CACHE="$ROOT_DIR/.cache/huggingface/hub"
 export TMPDIR="$ROOT_DIR/tmp"
 export OMNIGIBSON_DATA_PATH="$BEHAVIOR_DIR/OmniGibson/datasets"
 export OMNIGIBSON_APPDATA_PATH="$ROOT_DIR/og-appdata"
-export PATH="$HOME/.local/bin:$CONDA_DIR/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
 
 SETUP_LOG="${SETUP_LOG:-$ROOT_DIR/setup_run.log}"
 CHALLENGE_DEMOS_DIR="$OMNIGIBSON_DATA_PATH/2025-challenge-demos"
+
+usage() {
+  cat <<EOF
+Usage: bash setup.sh [OPTIONS]
+
+Sets up the b1k A2C2 workspace using openpi-comet + BEHAVIOR-1K submodules.
+
+Options:
+  -h, --help                         Show this help message
+  --system-packages MODE             auto, install, or skip (default: $SYSTEM_PACKAGES)
+  --skip-system-packages             Alias for --system-packages skip
+  --install-system-packages          Alias for --system-packages install
+  --conda-dir DIR                    Use or install conda at DIR
+  --conda-env NAME                   Conda env name (default: $CONDA_ENV)
+  --no-install-conda                 Require an existing conda installation
+  --download-conda                   Download Miniforge without prompting if no conda is found
+  --skip-behavior-dataset            Do not download BEHAVIOR runtime assets/task instances
+  --download-challenge-demos         Download the optional 2025 challenge demos subset
+  --skip-challenge-demos             Do not download the optional challenge demos subset
+  --skip-checkpoint                  Do not download the policy checkpoint
+  --checkpoint-name NAME             Checkpoint directory under sunshk/openpi_comet
+  --skip-submodule-update            Require existing submodule checkouts; do not run git submodule update
+  --no-behavior-sparse-checkout      Keep the BEHAVIOR-1K submodule working tree as-is
+
+Environment overrides:
+  B1K_ROOT, B1K_CONDA_DIR, B1K_CONDA_EXE, B1K_CONDA_ENV,
+  B1K_SYSTEM_PACKAGES, B1K_INSTALL_CONDA,
+  B1K_DOWNLOAD_BEHAVIOR_DATASET, B1K_DOWNLOAD_CHALLENGE_DEMOS,
+  B1K_DOWNLOAD_CHECKPOINT, B1K_CHECKPOINT_NAME,
+  B1K_UPDATE_SUBMODULES, B1K_BEHAVIOR_SPARSE_CHECKOUT,
+  B1K_TASK_NAME, B1K_TASK_DIR
+EOF
+}
+
+parse_args() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      --system-packages)
+        [ "$#" -ge 2 ] || die "--system-packages requires auto, install, or skip"
+        SYSTEM_PACKAGES="$2"
+        shift 2
+        ;;
+      --skip-system-packages)
+        SYSTEM_PACKAGES="skip"
+        shift
+        ;;
+      --install-system-packages)
+        SYSTEM_PACKAGES="install"
+        shift
+        ;;
+      --conda-dir)
+        [ "$#" -ge 2 ] || die "--conda-dir requires a path"
+        CONDA_DIR="$2"
+        shift 2
+        ;;
+      --conda-env)
+        [ "$#" -ge 2 ] || die "--conda-env requires a name"
+        CONDA_ENV="$2"
+        shift 2
+        ;;
+      --no-install-conda)
+        INSTALL_CONDA="never"
+        shift
+        ;;
+      --download-conda)
+        INSTALL_CONDA="download"
+        shift
+        ;;
+      --skip-behavior-dataset)
+        DOWNLOAD_BEHAVIOR_DATASET=0
+        shift
+        ;;
+      --download-challenge-demos)
+        DOWNLOAD_CHALLENGE_DEMOS=1
+        shift
+        ;;
+      --skip-challenge-demos)
+        DOWNLOAD_CHALLENGE_DEMOS=0
+        shift
+        ;;
+      --skip-checkpoint)
+        DOWNLOAD_CHECKPOINT=0
+        shift
+        ;;
+      --checkpoint-name)
+        [ "$#" -ge 2 ] || die "--checkpoint-name requires a name"
+        CHECKPOINT_NAME="$2"
+        shift 2
+        ;;
+      --skip-submodule-update)
+        UPDATE_SUBMODULES=0
+        shift
+        ;;
+      --no-behavior-sparse-checkout)
+        BEHAVIOR_SPARSE_CHECKOUT=0
+        shift
+        ;;
+      *)
+        die "Unknown option: $1"
+        ;;
+    esac
+  done
+}
+
+truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|y|Y|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 setup_logging() {
   mkdir -p "$ROOT_DIR"
@@ -58,12 +193,6 @@ retry() {
   done
 }
 
-require_root_for_apt() {
-  if [ "$(id -u)" -ne 0 ]; then
-    die "This setup installs apt packages. Please run as root, or preinstall the apt requirements."
-  fi
-}
-
 prepare_dirs() {
   log "Preparing directories under $ROOT_DIR"
   mkdir -p \
@@ -77,18 +206,62 @@ prepare_dirs() {
     "$OMNIGIBSON_APPDATA_PATH"
 }
 
+apt_get() {
+  if [ "$(id -u)" -eq 0 ]; then
+    DEBIAN_FRONTEND=noninteractive apt-get "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get "$@"
+  else
+    return 127
+  fi
+}
+
+find_missing_apt_packages() {
+  MISSING_APT_PACKAGES=()
+
+  if ! command -v dpkg-query >/dev/null 2>&1; then
+    MISSING_APT_PACKAGES=("${APT_PACKAGES[@]}")
+    return
+  fi
+
+  local pkg
+  for pkg in "${APT_PACKAGES[@]}"; do
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+      MISSING_APT_PACKAGES+=("$pkg")
+    fi
+  done
+}
+
 install_apt_packages() {
-  require_root_for_apt
-  log "Installing system packages"
-  apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    git git-lfs curl wget ca-certificates pkg-config python3-dev \
-    xvfb xauth ffmpeg \
-    libxt6 libglu1-mesa libsm6 libxext6 libxrender1 libxi6 \
-    libxrandr2 libxcursor1 libxinerama1 libxfixes3 \
-    libxkbcommon-x11-0 libegl1 libgl1 libglvnd0 \
-    libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev \
-    libswscale-dev libswresample-dev libavfilter-dev
+  case "$SYSTEM_PACKAGES" in
+    auto|install|skip) ;;
+    *) die "Invalid --system-packages mode: $SYSTEM_PACKAGES" ;;
+  esac
+
+  if [ "$SYSTEM_PACKAGES" = "skip" ]; then
+    log "Skipping apt packages by request"
+    return
+  fi
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    [ "$SYSTEM_PACKAGES" = "auto" ] && { log "apt-get not found; assuming system packages are managed externally"; return; }
+    die "apt-get not found; cannot install system packages"
+  fi
+
+  find_missing_apt_packages
+  if [ "${#MISSING_APT_PACKAGES[@]}" -eq 0 ]; then
+    log "System apt packages already present"
+    git lfs install
+    return
+  fi
+
+  log "Installing missing system packages: ${MISSING_APT_PACKAGES[*]}"
+  if ! apt_get update; then
+    die "Could not run apt-get update. Install these packages manually or rerun with --skip-system-packages: ${MISSING_APT_PACKAGES[*]}"
+  fi
+  if ! apt_get install -y --no-install-recommends "${MISSING_APT_PACKAGES[@]}"; then
+    die "Could not install apt packages. Install them manually or rerun with --skip-system-packages: ${MISSING_APT_PACKAGES[*]}"
+  fi
   git lfs install
 }
 
@@ -105,62 +278,239 @@ install_uv() {
   log "Installed $(uv --version)"
 }
 
-install_miniconda() {
-  if [ -x "$CONDA_DIR/bin/conda" ]; then
-    log "Using existing conda: $("$CONDA_DIR/bin/conda" --version)"
-    return
-  fi
+install_managed_conda() {
+  [ "$INSTALL_CONDA" != "never" ] || die "No conda found and automatic conda installation is disabled"
 
-  log "Installing Miniconda to $CONDA_DIR"
-  local installer="$ROOT_DIR/Miniconda3-latest-Linux-x86_64.sh"
-  retry 3 wget -O "$installer" https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+  log "Installing Miniforge to $CONDA_DIR"
+  mkdir -p "$(dirname "$CONDA_DIR")"
+  local installer="$TMPDIR/Miniforge3-Linux-x86_64.sh"
+  retry 3 wget -O "$installer" "$CONDA_INSTALLER_URL"
   bash "$installer" -b -p "$CONDA_DIR"
   rm -f "$installer"
   "$CONDA_DIR/bin/conda" --version
 }
 
+is_conda_root() {
+  local candidate="${1%/}"
+  [ -n "$candidate" ] && [ -x "$candidate/bin/conda" ] && [ -f "$candidate/etc/profile.d/conda.sh" ]
+}
+
+canonical_dir() {
+  local candidate="${1%/}"
+  (cd "$candidate" && pwd -P)
+}
+
+expand_user_path() {
+  case "$1" in
+    "~") printf '%s\n' "$HOME" ;;
+    "~/"*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+find_outer_conda_root() {
+  local dir parent candidate name
+  dir="$ROOT_DIR"
+
+  while :; do
+    parent="$(dirname "$dir")"
+    [ "$parent" != "$dir" ] || break
+
+    for name in miniforge3 miniconda3 anaconda3 mambaforge conda .conda opt/conda; do
+      candidate="$parent/$name"
+      if is_conda_root "$candidate"; then
+        canonical_dir "$candidate"
+        return 0
+      fi
+    done
+
+    for candidate in "$parent"/conda/* "$parent"/.conda/*; do
+      [ -e "$candidate" ] || continue
+      if is_conda_root "$candidate"; then
+        canonical_dir "$candidate"
+        return 0
+      fi
+    done
+
+    dir="$parent"
+  done
+
+  return 1
+}
+
+prompt_for_conda() {
+  local response candidate
+  [ "$INSTALL_CONDA" != "never" ] || die "No conda found. Rerun with --conda-dir DIR or remove --no-install-conda."
+
+  if [ "$INSTALL_CONDA" = "download" ]; then
+    CONDA_DIR="$DEFAULT_CONDA_DIR"
+    install_managed_conda
+    return
+  fi
+
+  if [ ! -t 0 ]; then
+    die "No conda root found outside $ROOT_DIR. Rerun with --conda-dir DIR, set B1K_CONDA_DIR, or use --download-conda."
+  fi
+
+  while :; do
+    printf '\nNo conda root was found outside: %s\n' "$ROOT_DIR"
+    printf 'Choose [s] specify existing conda root, [d] download Miniforge to %s, [q] quit: ' "$DEFAULT_CONDA_DIR"
+    read -r response
+
+    case "$response" in
+      s|S)
+        printf 'Conda root path: '
+        read -r candidate
+        candidate="$(expand_user_path "$candidate")"
+        if is_conda_root "$candidate"; then
+          CONDA_DIR="$(canonical_dir "$candidate")"
+          return
+        fi
+        printf 'No conda executable found at %s/bin/conda. Download Miniforge there? [y/N]: ' "$candidate"
+        read -r response
+        if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
+          CONDA_DIR="$candidate"
+          install_managed_conda
+          return
+        fi
+        ;;
+      d|D)
+        CONDA_DIR="$DEFAULT_CONDA_DIR"
+        install_managed_conda
+        return
+        ;;
+      q|Q)
+        die "Conda setup cancelled"
+        ;;
+      *)
+        printf 'Please answer s, d, or q.\n'
+        ;;
+    esac
+  done
+}
+
+resolve_conda() {
+  local found_conda_dir
+
+  if [ -n "$CONDA_EXE" ]; then
+    [ -x "$CONDA_EXE" ] || die "B1K_CONDA_EXE is not executable: $CONDA_EXE"
+    CONDA_DIR="$("$CONDA_EXE" info --base)"
+  elif [ -n "$CONDA_DIR" ]; then
+    CONDA_DIR="$(expand_user_path "$CONDA_DIR")"
+    if ! is_conda_root "$CONDA_DIR"; then
+      install_managed_conda
+    fi
+  elif found_conda_dir="$(find_outer_conda_root)"; then
+    CONDA_DIR="$found_conda_dir"
+    log "Found conda root outside project: $CONDA_DIR"
+  elif command -v conda >/dev/null 2>&1; then
+    CONDA_EXE="$(command -v conda)"
+    found_conda_dir="$("$CONDA_EXE" info --base)"
+    if [ "${found_conda_dir%/}" = "${PROJECT_CONDA_DIR%/}" ]; then
+      log "Ignoring project-local conda unless it is explicitly selected: $PROJECT_CONDA_DIR"
+      prompt_for_conda
+    else
+      CONDA_DIR="$found_conda_dir"
+      log "Found conda on PATH: $CONDA_DIR"
+    fi
+  else
+    prompt_for_conda
+  fi
+
+  CONDA_EXE="$CONDA_DIR/bin/conda"
+  [ -x "$CONDA_EXE" ] || die "conda executable not found at $CONDA_EXE"
+  export PATH="$CONDA_DIR/bin:$PATH"
+  log "Using conda: $("$CONDA_EXE" --version) at $CONDA_DIR"
+}
+
+source_conda() {
+  local conda_sh="$CONDA_DIR/etc/profile.d/conda.sh"
+  [ -f "$conda_sh" ] || die "conda.sh not found: $conda_sh"
+  # shellcheck source=/dev/null
+  source "$conda_sh"
+}
+
 accept_conda_tos() {
-  log "Accepting Anaconda ToS when supported by this conda version"
-  "$CONDA_DIR/bin/conda" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
-  "$CONDA_DIR/bin/conda" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r || true
+  if "$CONDA_EXE" tos --help >/dev/null 2>&1; then
+    log "Accepting Anaconda ToS for conda distributions that require it"
+    "$CONDA_EXE" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
+    "$CONDA_EXE" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r || true
+  else
+    log "Conda distribution does not require the Anaconda ToS plugin step"
+  fi
 }
 
-clone_openpi() {
-  if [ ! -d "$OPENPI_DIR/.git" ]; then
-    log "Cloning openpi-comet"
-    GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/mli0603/openpi-comet.git "$OPENPI_DIR"
-  fi
-
-  log "Checking out openpi-comet commit $OPENPI_COMMIT"
-  git -C "$OPENPI_DIR" fetch --all --tags
-  git -C "$OPENPI_DIR" checkout "$OPENPI_COMMIT"
-  git -C "$OPENPI_DIR" rev-parse HEAD
+is_git_checkout() {
+  local dir="$1"
+  [ -e "$dir/.git" ] && git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
-clone_behavior() {
-  if [ -e "$BEHAVIOR_DIR" ] && [ ! -d "$BEHAVIOR_DIR/.git" ]; then
-    log "Removing non-git BEHAVIOR directory left from an interrupted setup: $BEHAVIOR_DIR"
-    rm -rf "$BEHAVIOR_DIR"
+initialize_submodules() {
+  truthy "$UPDATE_SUBMODULES" || die "Submodules are missing. Rerun without --skip-submodule-update."
+  git -C "$ROOT_DIR" rev-parse --show-toplevel >/dev/null 2>&1 || \
+    die "This setup expects a git clone of b1k. Clone with submodules instead of using a source archive."
+  [ -f "$ROOT_DIR/.gitmodules" ] || die "Missing .gitmodules; cannot initialize project submodules."
+
+  log "Initializing project submodules"
+  git -C "$ROOT_DIR" submodule sync --recursive
+  GIT_LFS_SKIP_SMUDGE=1 git -C "$ROOT_DIR" submodule update \
+    --init --recursive --depth 1 --filter=blob:none \
+    openpi-comet BEHAVIOR-1K
+}
+
+configure_behavior_sparse_checkout() {
+  if ! truthy "$BEHAVIOR_SPARSE_CHECKOUT"; then
+    log "Keeping BEHAVIOR-1K working tree as-is"
+    return
   fi
 
-  if [ ! -d "$BEHAVIOR_DIR/.git" ]; then
-    log "Cloning BEHAVIOR-1K $BEHAVIOR_TAG with sparse checkout"
-    GIT_LFS_SKIP_SMUDGE=1 git clone \
-      --depth 1 --filter=blob:none --sparse \
-      --branch "$BEHAVIOR_TAG" \
-      https://github.com/StanfordVL/BEHAVIOR-1K.git "$BEHAVIOR_DIR"
-  fi
-
-  log "Configuring BEHAVIOR sparse checkout"
+  log "Configuring BEHAVIOR-1K sparse checkout"
   git -C "$BEHAVIOR_DIR" sparse-checkout set --no-cone \
-    setup.sh README.md OmniGibson bddl3 joylo asset_pipeline eval-jobqueue knowledgebase docs/assets
+    setup.sh README.md OmniGibson bddl3 joylo eval-jobqueue
+}
 
-  local actual_commit
-  actual_commit="$(git -C "$BEHAVIOR_DIR" rev-parse HEAD)"
-  if [ "$actual_commit" != "$BEHAVIOR_COMMIT" ]; then
-    die "Unexpected BEHAVIOR commit: $actual_commit (expected $BEHAVIOR_COMMIT)"
+verify_submodule_commit() {
+  local name="$1"
+  local dir="$2"
+  local expected="$3"
+  local actual
+
+  is_git_checkout "$dir" || die "$name is not checked out at $dir"
+  actual="$(git -C "$dir" rev-parse HEAD)"
+  if [ "$actual" != "$expected" ]; then
+    die "$name submodule is at $actual, expected $expected. Run git submodule update --init --recursive, or update setup.sh and the gitlink together."
   fi
-  log "BEHAVIOR commit: $actual_commit"
+  log "$name submodule commit: $actual"
+}
+
+verify_submodule_patches() {
+  log "Verifying fork-specific submodule files"
+  grep -q "openpi.shared.b1k_network_utils" "$OPENPI_DIR/scripts/serve_b1k.py" || \
+    die "openpi-comet submodule is missing the self-contained B1K websocket server patch"
+  test -f "$OPENPI_DIR/src/openpi/shared/b1k_network_utils.py" || \
+    die "openpi-comet submodule is missing src/openpi/shared/b1k_network_utils.py"
+  test -f "$BEHAVIOR_DIR/OmniGibson/omnigibson/learning/eval_custom.py" || \
+    die "BEHAVIOR-1K submodule is missing OmniGibson learning eval_custom.py"
+  test -f "$BEHAVIOR_DIR/OmniGibson/omnigibson/learning/wrappers/rgb_wrapper.py" || \
+    die "BEHAVIOR-1K submodule is missing RGBWrapper"
+}
+
+ensure_submodules() {
+  if ! is_git_checkout "$OPENPI_DIR" || ! is_git_checkout "$BEHAVIOR_DIR"; then
+    initialize_submodules
+  elif truthy "$UPDATE_SUBMODULES"; then
+    log "Synchronizing project submodules to the pinned commits"
+    GIT_LFS_SKIP_SMUDGE=1 git -C "$ROOT_DIR" submodule update \
+      --init --recursive --depth 1 --filter=blob:none \
+      openpi-comet BEHAVIOR-1K
+  else
+    log "Using existing submodule checkouts"
+  fi
+
+  configure_behavior_sparse_checkout
+  verify_submodule_commit "openpi-comet" "$OPENPI_DIR" "$OPENPI_SUBMODULE_COMMIT"
+  verify_submodule_commit "BEHAVIOR-1K" "$BEHAVIOR_DIR" "$BEHAVIOR_SUBMODULE_COMMIT"
+  verify_submodule_patches
 }
 
 setup_openpi_env() {
@@ -178,8 +528,7 @@ setup_openpi_env() {
 
 create_behavior_conda_env() {
   log "Creating conda env: $CONDA_ENV"
-  # shellcheck source=/dev/null
-  source "$CONDA_DIR/etc/profile.d/conda.sh"
+  source_conda
 
   if ! conda env list | awk '{print $1}' | grep -qx "$CONDA_ENV"; then
     conda create -n "$CONDA_ENV" python=3.10 -c conda-forge -y
@@ -196,8 +545,7 @@ create_behavior_conda_env() {
 
 setup_behavior() {
   log "Running BEHAVIOR / OmniGibson setup without dataset"
-  # shellcheck source=/dev/null
-  source "$CONDA_DIR/etc/profile.d/conda.sh"
+  source_conda
   conda activate "$CONDA_ENV"
 
   cd "$BEHAVIOR_DIR"
@@ -209,13 +557,12 @@ setup_behavior() {
 
 fix_behavior_numpy_stack() {
   log "Pinning BEHAVIOR NumPy / SciPy stack"
-  # shellcheck source=/dev/null
-  source "$CONDA_DIR/etc/profile.d/conda.sh"
+  source_conda
   conda activate "$CONDA_ENV"
 
   python -m pip install opencv-contrib-python==4.11.0.86 --no-deps
 
-  local site="$CONDA_DIR/envs/$CONDA_ENV/lib/python3.10/site-packages"
+  local site="$CONDA_PREFIX/lib/python3.10/site-packages"
   rm -rf \
     "$site"/numpy \
     "$site"/numpy.libs \
@@ -230,8 +577,7 @@ fix_behavior_numpy_stack() {
 
 download_behavior_dataset() {
   log "Downloading BEHAVIOR simulator assets and challenge task instances"
-  # shellcheck source=/dev/null
-  source "$CONDA_DIR/etc/profile.d/conda.sh"
+  source_conda
   conda activate "$CONDA_ENV"
 
   cd "$BEHAVIOR_DIR"
@@ -240,8 +586,7 @@ download_behavior_dataset() {
 }
 
 ensure_huggingface_hub() {
-  # shellcheck source=/dev/null
-  source "$CONDA_DIR/etc/profile.d/conda.sh"
+  source_conda
   conda activate "$CONDA_ENV"
 
   if python - <<'PY' >/dev/null 2>&1
@@ -356,12 +701,13 @@ download_challenge_demos() {
   verify_challenge_demos_subset
 }
 
-install_behavior_deps_into_openpi() {
-  log "Installing BEHAVIOR packages into openpi-comet uv env"
-  cd "$OPENPI_DIR"
-  uv pip install -e "$BEHAVIOR_DIR/bddl3"
-  uv pip install -e "$BEHAVIOR_DIR/OmniGibson[eval]"
-  uv pip check
+refresh_behavior_editables() {
+  log "Refreshing BEHAVIOR editable installs in the conda env"
+  source_conda
+  conda activate "$CONDA_ENV"
+  python -m pip install -e "$BEHAVIOR_DIR/bddl3"
+  python -m pip install -e "$BEHAVIOR_DIR/OmniGibson[eval]"
+  python -m pip check
 }
 
 download_checkpoint() {
@@ -390,167 +736,6 @@ download_checkpoint() {
   du -sh "$ckpt_dir"
 }
 
-apply_openpi_behavior_patch() {
-  log "Copying openpi-comet BEHAVIOR learning patch into OmniGibson"
-  cp -rv "$OPENPI_DIR/src/behavior/learning/." "$BEHAVIOR_DIR/OmniGibson/omnigibson/learning/"
-}
-
-patch_openpi_server_import() {
-  log "Patching openpi-comet server to avoid importing full OmniGibson in the policy process"
-
-  cat > "$OPENPI_DIR/src/openpi/shared/b1k_network_utils.py" <<'PY'
-import asyncio
-from copy import deepcopy
-import functools
-import http
-import logging
-import msgpack
-import numpy as np
-import time
-import traceback
-from typing import Any, Optional
-
-import websockets
-import websockets.asyncio.server as _server
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-
-class WebsocketPolicyServer:
-    def __init__(self, policy: Any, host: str = "0.0.0.0", port: int = 8000, metadata: dict | None = None) -> None:
-        self._policy = policy
-        self._host = host
-        self._port = port
-        self._metadata = metadata or {}
-
-    def serve_forever(self) -> None:
-        asyncio.run(self.run())
-
-    async def run(self):
-        logger.info("Starting websocket server on %s:%s...", self._host, self._port)
-        async with _server.serve(
-            self._handler,
-            self._host,
-            self._port,
-            compression=None,
-            max_size=None,
-            process_request=_health_check,
-        ) as server:
-            await server.serve_forever()
-
-    async def _handler(self, websocket):
-        logger.info("Connection from %s opened", websocket.remote_address)
-        packer = Packer()
-        await websocket.send(packer.pack(self._metadata))
-
-        prev_total_time = None
-        while True:
-            try:
-                start_time = time.monotonic()
-                result = unpackb(await websocket.recv(), strict_map_key=False)
-                if "reset" in result:
-                    self._policy.reset()
-                    continue
-
-                infer_start = time.monotonic()
-                action = self._policy.act(deepcopy(result))
-                infer_time = time.monotonic() - infer_start
-
-                response = {"action": action.cpu().numpy(), "server_timing": {"infer_ms": infer_time * 1000}}
-                if prev_total_time is not None:
-                    response["server_timing"]["prev_total_ms"] = prev_total_time * 1000
-
-                await websocket.send(packer.pack(response))
-                prev_total_time = time.monotonic() - start_time
-            except websockets.ConnectionClosed:
-                logger.info("Connection from %s closed", websocket.remote_address)
-                break
-            except Exception:
-                logger.error("Error in connection from %s:\n%s", websocket.remote_address, traceback.format_exc())
-                await websocket.close(code=1011, reason="Internal server error")
-                raise
-
-
-def _health_check(connection, request) -> Optional[Any]:
-    if hasattr(request, "path") and request.path == "/healthz":
-        if hasattr(connection, "respond"):
-            return connection.respond(http.HTTPStatus.OK, "OK\n")
-        return http.HTTPStatus.OK, {"Content-Type": "text/plain"}, b"OK\n"
-    return None
-
-
-def pack_array(obj):
-    if isinstance(obj, (np.ndarray, np.generic)) and obj.dtype.kind in ("V", "O", "c"):
-        raise ValueError(f"Unsupported dtype: {obj.dtype}")
-    if isinstance(obj, np.ndarray):
-        return {
-            b"__ndarray__": True,
-            b"data": obj.tobytes(),
-            b"dtype": obj.dtype.str,
-            b"shape": obj.shape,
-        }
-    if isinstance(obj, np.generic):
-        return {b"__npgeneric__": True, b"data": obj.item(), b"dtype": obj.dtype.str}
-    return obj
-
-
-def unpack_array(obj):
-    if b"__ndarray__" in obj:
-        return np.ndarray(buffer=obj[b"data"], dtype=np.dtype(obj[b"dtype"]), shape=obj[b"shape"])
-    if b"__npgeneric__" in obj:
-        return np.dtype(obj[b"dtype"]).type(obj[b"data"])
-    return obj
-
-
-Packer = functools.partial(msgpack.Packer, default=pack_array)
-unpackb = functools.partial(msgpack.unpackb, object_hook=unpack_array)
-PY
-
-  OPENPI_DIR="$OPENPI_DIR" python - <<'PY'
-import os
-from pathlib import Path
-
-openpi_dir = Path(os.environ["OPENPI_DIR"])
-serve_path = openpi_dir / "scripts/serve_b1k.py"
-text = serve_path.read_text()
-old = "from omnigibson.learning.utils.network_utils import WebsocketPolicyServer\n"
-new = "from openpi.shared.b1k_network_utils import WebsocketPolicyServer\n"
-if old not in text and new not in text:
-    raise SystemExit("Could not find serve_b1k WebsocketPolicyServer import")
-serve_path.write_text(text.replace(old, new))
-
-policy_path = openpi_dir / "src/openpi/policies/b1k_policy.py"
-text = policy_path.read_text()
-prefix = "import numpy as np\n"
-suffix = "\nfrom openpi import transforms\n"
-start = text.find(prefix)
-end = text.find(suffix, start + len(prefix))
-if start == -1 or end == -1:
-    raise SystemExit("Could not find b1k_policy import block anchors")
-
-new = '''try:
-    from omnigibson.learning.utils.eval_utils import PROPRIOCEPTION_INDICES
-except ModuleNotFoundError:
-    from collections import OrderedDict
-
-    PROPRIOCEPTION_INDICES = {
-        "R1Pro": OrderedDict(
-            {
-                "arm_left_qpos": np.s_[158:165],
-                "gripper_left_qpos": np.s_[193:195],
-                "arm_right_qpos": np.s_[197:204],
-                "gripper_right_qpos": np.s_[232:234],
-                "trunk_qpos": np.s_[236:240],
-                "base_qvel": np.s_[253:256],
-            }
-        )
-    }
-'''
-policy_path.write_text(text[: start + len(prefix)] + new + text[end:])
-PY
-}
-
 verify_install() {
   log "Verifying installation"
 
@@ -570,8 +755,7 @@ assert module.WebsocketPolicyServer is WebsocketPolicyServer
 print("openpi server imports ok")
 PY
 
-  # shellcheck source=/dev/null
-  source "$CONDA_DIR/etc/profile.d/conda.sh"
+  source_conda
   conda activate "$CONDA_ENV"
   export OMNIGIBSON_DATA_PATH="$OMNIGIBSON_DATA_PATH"
   export OMNIGIBSON_APPDATA_PATH="$OMNIGIBSON_APPDATA_PATH"
@@ -585,74 +769,31 @@ print("omnigibson", omnigibson.__version__)
 PY
   python -m pip check
 
-  test -d "$OMNIGIBSON_DATA_PATH/2025-challenge-task-instances" || die "Missing BEHAVIOR challenge instances"
-  verify_challenge_demos_subset
-  test -d "$OPENPI_DIR/checkpoints/$CHECKPOINT_NAME" || die "Missing checkpoint"
-  du -sh "$OPENPI_DIR/checkpoints/$CHECKPOINT_NAME" "$OMNIGIBSON_DATA_PATH"
-}
+  if truthy "$DOWNLOAD_BEHAVIOR_DATASET"; then
+    test -d "$OMNIGIBSON_DATA_PATH/2025-challenge-task-instances" || die "Missing BEHAVIOR challenge instances"
+  elif [ -d "$OMNIGIBSON_DATA_PATH/2025-challenge-task-instances" ]; then
+    log "BEHAVIOR challenge instances already present"
+  else
+    log "Skipping BEHAVIOR dataset presence check because --skip-behavior-dataset was used"
+  fi
 
-write_evaluation_readme() {
-  local out="$ROOT_DIR/evaluation_commands.md"
-  log "Writing evaluation commands to $out"
-  cat > "$out" <<EOF
-# Official-style evaluation commands for Runpod
+  if truthy "$DOWNLOAD_CHALLENGE_DEMOS"; then
+    verify_challenge_demos_subset
+  elif [ -d "$CHALLENGE_DEMOS_DIR" ]; then
+    log "Challenge demos are present but optional; skipping strict verification"
+  else
+    log "Skipping optional challenge demos verification"
+  fi
 
-These follow the openpi-comet README evaluation flow:
+  if truthy "$DOWNLOAD_CHECKPOINT"; then
+    test -d "$OPENPI_DIR/checkpoints/$CHECKPOINT_NAME" || die "Missing checkpoint"
+  elif [ -d "$OPENPI_DIR/checkpoints/$CHECKPOINT_NAME" ]; then
+    log "Checkpoint already present: $OPENPI_DIR/checkpoints/$CHECKPOINT_NAME"
+  else
+    log "Skipping checkpoint presence check because --skip-checkpoint was used"
+  fi
 
-1. Start the websocket policy server.
-2. Run BEHAVIOR-1K eval.py against that server.
-
-Run them in two terminals after setup finishes.
-
-## Terminal 1: start the openpi-comet websocket policy server
-
-    cd "$OPENPI_DIR"
-    export PATH="\$HOME/.local/bin:$CONDA_DIR/bin:\$PATH"
-    export UV_CACHE_DIR="$UV_CACHE_DIR"
-    export XLA_PYTHON_CLIENT_PREALLOCATE=false
-    export XLA_PYTHON_CLIENT_MEM_FRACTION=0.35
-    export JAX_COMPILATION_CACHE_DIR="$ROOT_DIR/.cache/jax"
-
-    uv run --no-sync scripts/serve_b1k.py \
-      --task_name=picking_up_trash \
-      --control_mode=receeding_horizon \
-      --max_len=32 \
-      policy:checkpoint \
-      --policy.config=pi05_b1k-base \
-      --policy.dir=./checkpoints/$CHECKPOINT_NAME
-
-## Terminal 2: run BEHAVIOR evaluation
-
-    cd "$BEHAVIOR_DIR"
-    source "$CONDA_DIR/etc/profile.d/conda.sh"
-    conda activate "$CONDA_ENV"
-
-    RUN_LOG="$BEHAVIOR_DIR/output/picking_up_trash_\$(date -u +%Y%m%d_%H%M%S)"
-    mkdir -p "\$RUN_LOG"
-
-    export HYDRA_FULL_ERROR=1
-    export OMNI_KIT_ACCEPT_EULA=YES
-    export OMNIGIBSON_DATA_PATH="$OMNIGIBSON_DATA_PATH"
-    export OMNIGIBSON_APPDATA_PATH="$OMNIGIBSON_APPDATA_PATH"
-    export TMPDIR="$TMPDIR"
-
-    xvfb-run -a -s "-screen 0 1280x720x24" python OmniGibson/omnigibson/learning/eval.py \
-      policy=websocket \
-      task.name=picking_up_trash \
-      log_path="\$RUN_LOG" \
-      model.host=127.0.0.1 \
-      env_wrapper._target_=omnigibson.learning.wrappers.RGBWrapper \
-      eval_instance_ids="[0]" \
-      write_video=true
-
-Output videos are written under:
-
-    \$RUN_LOG/videos/
-
-Optional quick listing:
-
-    find "\$RUN_LOG" -name "*.mp4" -print
-EOF
+  du -sh "$OPENPI_DIR/checkpoints/$CHECKPOINT_NAME" "$OMNIGIBSON_DATA_PATH" 2>/dev/null || true
 }
 
 print_next_steps() {
@@ -662,36 +803,69 @@ print_next_steps() {
 Setup finished.
 ============================================================
 
-Evaluation commands were written to:
-  $ROOT_DIR/evaluation_commands.md
-
-The file follows the official openpi-comet two-step eval flow, with only the
-Runpod/headless and video-output options kept.
+Baseline evaluation commands are documented in:
+  $ROOT_DIR/README.md
 EOF
 }
 
+log_config() {
+  log "Setup configuration"
+  printf 'ROOT_DIR=%s\n' "$ROOT_DIR"
+  printf 'SYSTEM_PACKAGES=%s\n' "$SYSTEM_PACKAGES"
+  printf 'OPENPI_SUBMODULE_COMMIT=%s\n' "$OPENPI_SUBMODULE_COMMIT"
+  printf 'BEHAVIOR_SUBMODULE_COMMIT=%s\n' "$BEHAVIOR_SUBMODULE_COMMIT"
+  printf 'UPDATE_SUBMODULES=%s\n' "$UPDATE_SUBMODULES"
+  printf 'BEHAVIOR_SPARSE_CHECKOUT=%s\n' "$BEHAVIOR_SPARSE_CHECKOUT"
+  printf 'TASK_NAME=%s\n' "$TASK_NAME"
+  printf 'TASK_DIR=%s\n' "$TASK_DIR"
+  printf 'CHALLENGE_DEMOS_TASK=%s\n' "$CHALLENGE_DEMOS_TASK"
+  printf 'CONDA_DIR=%s\n' "${CONDA_DIR:-<auto>}"
+  printf 'CONDA_ENV=%s\n' "$CONDA_ENV"
+  printf 'DOWNLOAD_BEHAVIOR_DATASET=%s\n' "$DOWNLOAD_BEHAVIOR_DATASET"
+  printf 'DOWNLOAD_CHALLENGE_DEMOS=%s\n' "$DOWNLOAD_CHALLENGE_DEMOS"
+  printf 'DOWNLOAD_CHECKPOINT=%s\n' "$DOWNLOAD_CHECKPOINT"
+  printf 'CHECKPOINT_NAME=%s\n' "$CHECKPOINT_NAME"
+}
+
 main() {
+  parse_args "$@"
   setup_logging
+  log_config
   prepare_dirs
   install_apt_packages
   install_uv
-  install_miniconda
+  resolve_conda
   accept_conda_tos
-  clone_openpi
-  clone_behavior
+  ensure_submodules
   setup_openpi_env
   create_behavior_conda_env
   setup_behavior
   fix_behavior_numpy_stack
-  download_behavior_dataset
-  download_challenge_demos
-  install_behavior_deps_into_openpi
-  download_checkpoint
-  apply_openpi_behavior_patch
-  patch_openpi_server_import
+
+  if truthy "$DOWNLOAD_BEHAVIOR_DATASET"; then
+    download_behavior_dataset
+  else
+    log "Skipping BEHAVIOR dataset download by request"
+  fi
+
+  if truthy "$DOWNLOAD_CHALLENGE_DEMOS"; then
+    download_challenge_demos
+  else
+    log "Skipping optional challenge demos download"
+  fi
+
+  refresh_behavior_editables
+
+  if truthy "$DOWNLOAD_CHECKPOINT"; then
+    download_checkpoint
+  else
+    log "Skipping checkpoint download by request"
+  fi
+
   verify_install
-  write_evaluation_readme
   print_next_steps
 }
 
-main "$@"
+if [ "${B1K_SOURCE_ONLY:-0}" != "1" ]; then
+  main "$@"
+fi
