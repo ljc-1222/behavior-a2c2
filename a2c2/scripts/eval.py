@@ -24,6 +24,7 @@ from dataset import (  # noqa: E402
     resolve_language_instruction,
     split_episode_pairs,
 )
+from loss import A2C2ResidualLoss, loss_config_from_dict  # noqa: E402
 from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig, config_from_checkpoint_payload  # noqa: E402
 
 
@@ -142,6 +143,8 @@ def main() -> None:
     cfg = config_from_checkpoint(payload)
     image_size = image_size_from_checkpoint(payload, args.image_size)
     checkpoint_args = payload.get("args", {})
+    loss_config = loss_config_from_dict(payload.get("loss_config"))
+    action_stats = payload.get("action_stats")
     if args.rgb_feature_dim is not None:
         cfg = replace(cfg, rgb_feature_dim=args.rgb_feature_dim)
     if args.rgb_cache_kind is not None:
@@ -153,6 +156,10 @@ def main() -> None:
     model = A2C2CorrectionHead(cfg).to(device)
     model.load_state_dict(payload["model_state_dict"])
     model.eval()
+    loss_fn = A2C2ResidualLoss(
+        loss_config,
+        action_scale=action_stats["scale"] if action_stats is not None else None,
+    ).to(device)
 
     dataset_root = resolve_dataset_root(args.dataset_root)
     pairs = discover_episode_pairs(dataset_root, args.task_dir)
@@ -195,6 +202,7 @@ def main() -> None:
     residual_mae_sum = 0.0
     corrected_mse_sum = 0.0
     base_mse_sum = 0.0
+    loss_component_sums: dict[str, float] = {}
 
     with torch.no_grad():
         for batch in loader:
@@ -211,10 +219,14 @@ def main() -> None:
             residual_mae_sum += F.l1_loss(pred_delta, target_delta, reduction="sum").item()
             corrected_mse_sum += F.mse_loss(corrected_action, expert_action, reduction="sum").item()
             base_mse_sum += F.mse_loss(base_action, expert_action, reduction="sum").item()
+            _loss, loss_metrics = loss_fn(pred_delta, batch)
+            for key, value in loss_metrics.items():
+                loss_component_sums[key] = loss_component_sums.get(key, 0.0) + float(value.detach().cpu()) * batch_size
             if total >= args.num_samples:
                 break
 
     denom = max(total * cfg.action_dim, 1)
+    sample_denom = max(total, 1)
     print(f"dataset_root: {dataset_root}")
     print(f"checkpoint: {args.checkpoint}")
     print(f"image_size: {image_size}")
@@ -223,10 +235,13 @@ def main() -> None:
     print(f"split: {args.split}")
     print(f"episodes: {len(eval_pairs)}")
     print(f"samples: {total}")
+    print(f"loss_preset: {loss_config.preset}")
     print(f"residual_mse: {residual_mse_sum / denom:.8f}")
     print(f"residual_mae: {residual_mae_sum / denom:.8f}")
     print(f"corrected_action_mse: {corrected_mse_sum / denom:.8f}")
     print(f"base_action_mse: {base_mse_sum / denom:.8f}")
+    for key in sorted(loss_component_sums):
+        print(f"loss/{key}: {loss_component_sums[key] / sample_denom:.8f}")
 
 
 if __name__ == "__main__":
