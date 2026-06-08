@@ -70,6 +70,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--rgb-backbone", choices=("resnet18", "swin_t", "small-cnn"), default="resnet18")
     parser.add_argument("--depth-backbone", choices=("resnet18", "swin_t", "small-cnn"), default="resnet18")
+    parser.add_argument(
+        "--use-depth",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use depth video inputs. Pass --no-use-depth to skip depth decoding and the depth branch.",
+    )
     parser.add_argument("--depth-preprocess", choices=("hha", "normalized"), default="hha")
     parser.add_argument("--depth-max-m", type=float, default=10.0)
     parser.add_argument("--pretrained-rgb", action=argparse.BooleanOptionalAction, default=True)
@@ -102,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument("--wandb-mode", default="online", choices=("online", "offline", "disabled"))
-    parser.set_defaults(use_rgb=True, use_depth=True, use_language=True)
+    parser.set_defaults(use_rgb=True, use_language=True)
     return parser.parse_args()
 
 

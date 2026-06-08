@@ -65,7 +65,7 @@ class Args:
     temporal_ensemble_max: int = 3
     fine_grained_level: int = 0
 
-    # A2C2 RGBD + task-language correction-head checkpoint.
+    # A2C2 RGB/depth + task-language correction-head checkpoint.
     a2c2_checkpoint: Path = Path("../a2c2/runs/task18_wandb_bs128_w8_bpe4/latest.pt")
     a2c2_device: str = "auto"
     a2c2_image_size: int | None = None

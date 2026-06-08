@@ -57,27 +57,22 @@ def check_legacy_checkpoint_rejected() -> None:
     try:
         config_from_checkpoint_payload(legacy_payload, context="legacy smoke checkpoint")
     except ValueError as exc:
-        assert "Pre-RGBD/task-language" in str(exc)
+        assert "Pre-RGB/task-language" in str(exc)
     else:
         raise AssertionError("Legacy A2C2 checkpoint config was accepted.")
 
-    try:
-        A2C2CorrectionHead(
-            A2C2CorrectionHeadConfig(
-                action_horizon=HORIZON,
-                use_rgb=True,
-                use_depth=False,
-                use_language=True,
-                rgb_backbone="small-cnn",
-                depth_backbone="small-cnn",
-                pretrained_rgb=False,
-                pretrained_depth=False,
-            )
+    A2C2CorrectionHead(
+        A2C2CorrectionHeadConfig(
+            action_horizon=HORIZON,
+            use_rgb=True,
+            use_depth=False,
+            use_language=True,
+            rgb_backbone="small-cnn",
+            depth_backbone="small-cnn",
+            pretrained_rgb=False,
+            pretrained_depth=False,
         )
-    except ValueError as exc:
-        assert "depth" in str(exc).lower()
-    else:
-        raise AssertionError("A2C2 model accepted a config without depth.")
+    )
 
 
 class FakeBasePolicy:
@@ -315,7 +310,7 @@ def run_smoke() -> None:
 
     print("online A2C2 smoke test passed")
     print("OpenPI prefix latent API surface checked")
-    print("legacy no-RGBD/task-language checkpoint rejection checked")
+    print("legacy no-RGB/task-language checkpoint rejection checked")
     print("task::low_dim task-info source and truncation checked")
     print(f"base policy calls at env steps: {[call['state0'] for call in base_policy.calls]}")
     print(f"correction offsets: {expected_offsets}")

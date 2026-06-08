@@ -10,7 +10,7 @@ import torch
 from torch import Tensor, nn
 
 
-REQUIRED_A2C2_FEATURE_FLAGS = ("use_rgb", "use_depth", "use_language")
+REQUIRED_A2C2_FEATURE_FLAGS = ("use_rgb", "use_language")
 REQUIRED_A2C2_FEATURE_LABELS = {
     "use_rgb": "RGB",
     "use_depth": "depth",
@@ -70,9 +70,9 @@ def validate_required_a2c2_features(
     if disabled:
         labels = ", ".join(REQUIRED_A2C2_FEATURE_LABELS[flag] for flag in disabled)
         raise ValueError(
-            f"{context} must enable RGB, depth, and task-language inputs. "
+            f"{context} must enable RGB and task-language inputs. "
             f"Disabled required feature(s): {labels}. "
-            "Pre-RGBD/task-language A2C2 artifacts are unsupported."
+            "Pre-RGB/task-language A2C2 artifacts are unsupported."
         )
 
 
@@ -85,7 +85,7 @@ def config_from_checkpoint_payload(
     if not isinstance(raw, dict):
         raise ValueError(
             f"{context} is missing a serialized A2C2 config. "
-            "Pre-RGBD/task-language A2C2 artifacts are unsupported."
+            "Pre-RGB/task-language A2C2 artifacts are unsupported."
         )
 
     missing = [flag for flag in REQUIRED_A2C2_FEATURE_FLAGS if flag not in raw]
@@ -93,7 +93,7 @@ def config_from_checkpoint_payload(
         labels = ", ".join(REQUIRED_A2C2_FEATURE_LABELS[flag] for flag in missing)
         raise ValueError(
             f"{context} config is missing required feature flag(s): {labels}. "
-            "Pre-RGBD/task-language A2C2 artifacts are unsupported."
+            "Pre-RGB/task-language A2C2 artifacts are unsupported."
         )
 
     valid_keys = {field.name for field in fields(A2C2CorrectionHeadConfig)}

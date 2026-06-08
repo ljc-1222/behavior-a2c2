@@ -421,5 +421,5 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
     def _missing_array(self, name: str, shape: tuple[int, ...]) -> np.ndarray:
         raise KeyError(
             f"A2C2 checkpoint requires {name}, but the current online observation does not provide it. "
-            "Use an online BEHAVIOR wrapper/checkpoint that supplies every enabled RGBD/task-language feature."
+            "Use an online BEHAVIOR wrapper/checkpoint that supplies every enabled RGB/depth/task-language feature."
         )

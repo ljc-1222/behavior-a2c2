@@ -533,14 +533,12 @@ class A2C2RandomSampleDataset(IterableDataset):
         missing_required = []
         if not self.use_rgb:
             missing_required.append("RGB")
-        if not self.use_depth:
-            missing_required.append("depth")
         if not self.use_language:
             missing_required.append("task language")
         if missing_required:
             names = ", ".join(missing_required)
             raise ValueError(
-                f"A2C2 datasets must include RGBD and task-language inputs; disabled required feature(s): {names}."
+                f"A2C2 datasets must include RGB and task-language inputs; disabled required feature(s): {names}."
             )
         if self.use_language and not self.language_instruction:
             raise ValueError("use_language=True requires a language_instruction.")
