@@ -69,6 +69,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mlp-hidden-dim", type=int, default=1024)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--rgb-backbone", choices=("resnet18", "swin_t", "small-cnn"), default="resnet18")
+    parser.add_argument(
+        "--rgb-cache-kind",
+        choices=("none", "frames", "resnet18-features"),
+        default="none",
+        help="RGB data source. 'none' decodes mp4; 'frames' or 'resnet18-features' read parquet cache.",
+    )
+    parser.add_argument(
+        "--rgb-cache-root",
+        type=Path,
+        default=None,
+        help="Task-level RGB cache root. Defaults to <dataset-root>/rgb_features_resnet18/<task-dir> for feature cache.",
+    )
+    parser.add_argument("--rgb-feature-dim", type=int, default=512)
     parser.add_argument("--depth-backbone", choices=("resnet18", "swin_t", "small-cnn"), default="resnet18")
     parser.add_argument(
         "--use-depth",
@@ -120,6 +133,9 @@ def build_dataset_kwargs(
     return {
         "batches_per_episode": args.batches_per_episode,
         "use_rgb": cfg.use_rgb,
+        "rgb_cache_kind": args.rgb_cache_kind,
+        "rgb_cache_root": args.rgb_cache_root,
+        "rgb_feature_dim": cfg.rgb_feature_dim,
         "use_depth": cfg.use_depth,
         "image_size": args.image_size,
         "depth_preprocess": cfg.depth_preprocess,
@@ -145,6 +161,7 @@ def predict_delta(model: A2C2CorrectionHead, batch: dict[str, torch.Tensor]) -> 
         batch["time_feature"],
         batch["valid_action_mask"],
         rgb_images=batch.get("rgb_images"),
+        rgb_features=batch.get("rgb_features"),
         depth_images=batch.get("depth_images"),
         language_tokens=batch.get("language_tokens"),
         language_token_mask=batch.get("language_token_mask"),
@@ -296,6 +313,8 @@ def main() -> None:
     cfg = A2C2CorrectionHeadConfig(
         use_base_policy_z=args.use_latent,
         use_rgb=args.use_rgb,
+        rgb_input_kind="resnet18-features" if args.rgb_cache_kind == "resnet18-features" else "images",
+        rgb_feature_dim=args.rgb_feature_dim,
         use_depth=args.use_depth,
         use_language=args.use_language,
         use_cam_rel_poses=args.use_cam_rel_poses,

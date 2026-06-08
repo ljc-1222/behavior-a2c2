@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -55,6 +56,19 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="RGB/depth resize size. Defaults to the checkpoint arg, then 224.",
     )
+    parser.add_argument(
+        "--rgb-cache-kind",
+        choices=("none", "frames", "resnet18-features"),
+        default=None,
+        help="RGB data source. Defaults to the checkpoint arg, then mp4 decoding.",
+    )
+    parser.add_argument(
+        "--rgb-cache-root",
+        type=Path,
+        default=None,
+        help="Task-level RGB cache root. Defaults to <dataset-root>/rgb_features_resnet18/<task-dir> for feature cache.",
+    )
+    parser.add_argument("--rgb-feature-dim", type=int, default=None)
     parser.add_argument("--language-instruction", default=None, help="Override the dataset metadata instruction.")
     return parser.parse_args()
 
@@ -75,12 +89,17 @@ def image_size_from_checkpoint(payload: dict, raw_image_size: int | None) -> int
 def build_dataset_kwargs(
     cfg: A2C2CorrectionHeadConfig,
     image_size: int,
+    rgb_cache_kind: str,
+    rgb_cache_root: Path | None,
     language_instruction: str | None,
     batches_per_episode: int,
 ) -> dict:
     return {
         "batches_per_episode": batches_per_episode,
         "use_rgb": cfg.use_rgb,
+        "rgb_cache_kind": rgb_cache_kind,
+        "rgb_cache_root": rgb_cache_root,
+        "rgb_feature_dim": cfg.rgb_feature_dim,
         "use_depth": cfg.use_depth,
         "image_size": image_size,
         "depth_preprocess": cfg.depth_preprocess,
@@ -106,6 +125,7 @@ def predict_delta(model: A2C2CorrectionHead, batch: dict[str, torch.Tensor]) -> 
         batch["time_feature"],
         batch["valid_action_mask"],
         rgb_images=batch.get("rgb_images"),
+        rgb_features=batch.get("rgb_features"),
         depth_images=batch.get("depth_images"),
         language_tokens=batch.get("language_tokens"),
         language_token_mask=batch.get("language_token_mask"),
@@ -121,12 +141,20 @@ def main() -> None:
     payload = torch.load(args.checkpoint.expanduser(), map_location=device)
     cfg = config_from_checkpoint(payload)
     image_size = image_size_from_checkpoint(payload, args.image_size)
+    checkpoint_args = payload.get("args", {})
+    if args.rgb_feature_dim is not None:
+        cfg = replace(cfg, rgb_feature_dim=args.rgb_feature_dim)
+    if args.rgb_cache_kind is not None:
+        rgb_cache_kind = args.rgb_cache_kind
+    else:
+        rgb_cache_kind = checkpoint_args.get("rgb_cache_kind")
+        if rgb_cache_kind is None:
+            rgb_cache_kind = "resnet18-features" if cfg.rgb_input_kind == "resnet18-features" else "none"
     model = A2C2CorrectionHead(cfg).to(device)
     model.load_state_dict(payload["model_state_dict"])
     model.eval()
 
     dataset_root = resolve_dataset_root(args.dataset_root)
-    checkpoint_args = payload.get("args", {})
     pairs = discover_episode_pairs(dataset_root, args.task_dir)
     language_instruction = args.language_instruction or checkpoint_args.get("language_instruction")
     if language_instruction is None:
@@ -134,6 +162,8 @@ def main() -> None:
     dataset_kwargs = build_dataset_kwargs(
         cfg,
         image_size,
+        rgb_cache_kind,
+        args.rgb_cache_root,
         language_instruction,
         args.batches_per_episode,
     )

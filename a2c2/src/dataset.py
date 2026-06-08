@@ -472,6 +472,66 @@ class EpisodeVideoReader:
         self.close()
 
 
+class EpisodeRgbFeatureReader:
+    """Read cached per-frame RGB features for one episode."""
+
+    def __init__(self, pair: EpisodePair, *, cache_root: Path | None, feature_dim: int = 512) -> None:
+        dataset_root = dataset_root_from_pair(pair)
+        task_dir = task_dir_from_pair(pair)
+        root = cache_root.expanduser().resolve() if cache_root is not None else dataset_root / "rgb_features_resnet18" / task_dir
+        episode_name = pair.data_path.name
+        features = []
+        for column in RGB_VIDEO_COLUMNS:
+            path = root / column / episode_name
+            if not path.is_file():
+                raise FileNotFoundError(f"Missing RGB feature parquet for {column}: {path}")
+            table = pq.read_table(path, columns=["feature"])
+            values = fixed_or_variable_list_to_numpy(table.column("feature"), np.float32)
+            if values.ndim != 2 or values.shape[1] != feature_dim:
+                raise ValueError(f"{path} must contain feature rows with shape [N, {feature_dim}], got {values.shape}")
+            features.append(values)
+        row_counts = {values.shape[0] for values in features}
+        if len(row_counts) != 1:
+            raise ValueError(f"RGB feature row mismatch for {episode_name}: {sorted(row_counts)}")
+        self.features = np.stack(features, axis=1).astype(np.float32, copy=False)
+
+    def read_group_batch(self, frame_indices: np.ndarray) -> np.ndarray:
+        frame_indices = np.asarray(frame_indices, dtype=np.int64).reshape(-1)
+        return np.asarray(self.features[frame_indices], dtype=np.float32).copy()
+
+
+class EpisodeRgbFrameCacheReader:
+    """Read cached resized RGB uint8 frames for one episode."""
+
+    def __init__(self, pair: EpisodePair, *, cache_root: Path | None, image_size: int) -> None:
+        dataset_root = dataset_root_from_pair(pair)
+        task_dir = task_dir_from_pair(pair)
+        root = cache_root.expanduser().resolve() if cache_root is not None else dataset_root / "video_frames" / task_dir
+        episode_name = pair.data_path.name
+        frames = []
+        frame_dim = image_size * image_size * 3
+        for column in RGB_VIDEO_COLUMNS:
+            path = root / column / episode_name
+            if not path.is_file():
+                raise FileNotFoundError(f"Missing RGB frame parquet for {column}: {path}")
+            table = pq.read_table(path, columns=["frame"])
+            values = fixed_or_variable_list_to_numpy(table.column("frame"), np.uint8)
+            if values.ndim != 2 or values.shape[1] != frame_dim:
+                raise ValueError(f"{path} must contain frame rows with shape [N, {frame_dim}], got {values.shape}")
+            values = values.reshape(values.shape[0], image_size, image_size, 3)
+            frames.append(values)
+        row_counts = {values.shape[0] for values in frames}
+        if len(row_counts) != 1:
+            raise ValueError(f"RGB frame row mismatch for {episode_name}: {sorted(row_counts)}")
+        self.frames = np.stack(frames, axis=1)
+
+    def read_group_batch(self, frame_indices: np.ndarray) -> np.ndarray:
+        frame_indices = np.asarray(frame_indices, dtype=np.int64).reshape(-1)
+        values = np.asarray(self.frames[frame_indices], dtype=np.float32)
+        values = values / 127.5 - 1.0
+        return np.transpose(values, (0, 1, 4, 2, 3)).copy()
+
+
 class A2C2RandomSampleDataset(IterableDataset):
     """Yield pre-batched examples, with every batch sampled from a single episode."""
 
@@ -485,6 +545,9 @@ class A2C2RandomSampleDataset(IterableDataset):
         *,
         batches_per_episode: int = 1,
         use_rgb: bool = True,
+        rgb_cache_kind: str = "none",
+        rgb_cache_root: Path | None = None,
+        rgb_feature_dim: int = 512,
         use_depth: bool = True,
         image_size: int = 224,
         depth_preprocess: str = "normalized",
@@ -507,6 +570,9 @@ class A2C2RandomSampleDataset(IterableDataset):
         self.total_samples = total_samples
         self.batches_per_episode = batches_per_episode
         self.use_rgb = use_rgb
+        self.rgb_cache_kind = rgb_cache_kind
+        self.rgb_cache_root = rgb_cache_root
+        self.rgb_feature_dim = rgb_feature_dim
         self.use_depth = use_depth
         self.image_size = image_size
         self.depth_preprocess = depth_preprocess
@@ -526,6 +592,10 @@ class A2C2RandomSampleDataset(IterableDataset):
             raise ValueError("batches_per_episode must be positive.")
         if self.image_size <= 0:
             raise ValueError("image_size must be positive.")
+        if self.rgb_cache_kind not in {"none", "frames", "resnet18-features"}:
+            raise ValueError("rgb_cache_kind must be 'none', 'frames', or 'resnet18-features'.")
+        if self.rgb_feature_dim <= 0:
+            raise ValueError("rgb_feature_dim must be positive.")
         if self.depth_preprocess not in {"normalized", "hha"}:
             raise ValueError("depth_preprocess must be either 'normalized' or 'hha'.")
         if self.depth_max_m <= 0.0:
@@ -577,10 +647,24 @@ class A2C2RandomSampleDataset(IterableDataset):
                     task_info_dim=self.task_info_dim,
                 )
                 reader = None
-                if self.use_rgb or self.use_depth:
+                rgb_feature_reader = None
+                rgb_frame_reader = None
+                if self.use_rgb and self.rgb_cache_kind == "frames":
+                    rgb_frame_reader = EpisodeRgbFrameCacheReader(
+                        pair,
+                        cache_root=self.rgb_cache_root,
+                        image_size=self.image_size,
+                    )
+                elif self.use_rgb and self.rgb_cache_kind == "resnet18-features":
+                    rgb_feature_reader = EpisodeRgbFeatureReader(
+                        pair,
+                        cache_root=self.rgb_cache_root,
+                        feature_dim=self.rgb_feature_dim,
+                    )
+                if (self.use_rgb and self.rgb_cache_kind == "none") or self.use_depth:
                     reader = EpisodeVideoReader(
                         pair,
-                        use_rgb=self.use_rgb,
+                        use_rgb=self.use_rgb and self.rgb_cache_kind == "none",
                         use_depth=self.use_depth,
                         image_size=self.image_size,
                         depth_preprocess=self.depth_preprocess,
@@ -595,7 +679,14 @@ class A2C2RandomSampleDataset(IterableDataset):
                             current_batch_size = min(current_batch_size, total_samples - yielded)
                         if current_batch_size <= 0:
                             return
-                        batch = self._build_episode_batch(episode, rng, current_batch_size, reader)
+                        batch = self._build_episode_batch(
+                            episode,
+                            rng,
+                            current_batch_size,
+                            reader,
+                            rgb_feature_reader,
+                            rgb_frame_reader,
+                        )
                         yielded += int(batch["base_action"].shape[0])
                         yield batch
                 finally:
@@ -633,6 +724,8 @@ class A2C2RandomSampleDataset(IterableDataset):
         rng: np.random.Generator,
         batch_size: int,
         reader: EpisodeVideoReader | None,
+        rgb_feature_reader: EpisodeRgbFeatureReader | None,
+        rgb_frame_reader: EpisodeRgbFrameCacheReader | None,
     ) -> dict[str, np.ndarray]:
         source_indices, chunk_offsets = self._draw_source_offsets(episode, rng, batch_size)
         target_indices = source_indices + chunk_offsets
@@ -669,7 +762,11 @@ class A2C2RandomSampleDataset(IterableDataset):
                 self.language_token_mask,
                 (batch_size, self.language_token_mask.shape[0]),
             ).copy()
-        if reader is not None and self.use_rgb:
+        if rgb_feature_reader is not None and self.use_rgb:
+            batch["rgb_features"] = rgb_feature_reader.read_group_batch(target_indices)
+        elif rgb_frame_reader is not None and self.use_rgb:
+            batch["rgb_images"] = rgb_frame_reader.read_group_batch(target_indices)
+        elif reader is not None and self.use_rgb:
             batch["rgb_images"] = reader.read_group_batch(RGB_VIDEO_COLUMNS, target_indices)
         if reader is not None and self.use_depth:
             batch["depth_images"] = reader.read_group_batch(DEPTH_VIDEO_COLUMNS, target_indices)
