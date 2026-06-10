@@ -54,35 +54,58 @@ runtime libraries, and related dependencies.
 
 ## Clone With Submodules
 
-Recommended:
+Recommended complete checkout:
 
 ```bash
-git clone --filter=blob:none https://github.com/ljc-1222/behavior-a2c2.git
+git clone https://github.com/ljc-1222/behavior-a2c2.git
 cd behavior-a2c2
-git submodule update --init --recursive --remote --depth 1 --filter=blob:none
+git submodule sync --recursive
+git submodule update --init --recursive --remote
 ```
 
-`--remote` checks out the latest commits from the branches recorded in
-`.gitmodules`. Without `--remote`, Git submodules use the exact gitlink commits
-recorded by the outer repository.
+This downloads the outer repository plus the full `openpi-comet` and
+`BEHAVIOR-1K` submodule working trees. Do not add `--depth`, `--filter`, or
+`--shallow-submodules` when you need a complete submodule checkout.
 
-One-command clone, followed by branch-tip submodule sync:
+`--remote` checks out the latest commits from the branches recorded in
+`.gitmodules`. For a reproducible checkout that uses the exact gitlink commits
+recorded by the outer repository instead, omit `--remote`:
+
+```bash
+git submodule update --init --recursive
+```
+
+One-command complete clone, followed by branch-tip submodule sync:
 
 ```bash
 git clone \
-  --filter=blob:none \
-  --also-filter-submodules \
   --recurse-submodules \
-  --shallow-submodules \
   https://github.com/ljc-1222/behavior-a2c2.git
 cd behavior-a2c2
-git submodule update --init --recursive --remote --depth 1 --filter=blob:none
+git submodule update --init --recursive --remote
 ```
 
-`setup.sh` also checks the submodules and initializes them when needed:
+If you already cloned with a shallow or filtered submodule checkout, the cleanest
+way to guarantee a complete local copy is to reclone with the complete commands
+above. To expand an existing checkout in place, run:
 
 ```bash
-git submodule update --init --recursive --remote --depth 1 --filter=blob:none openpi-comet BEHAVIOR-1K
+git submodule foreach --recursive 'git fetch --unshallow --tags || git fetch --tags'
+git -C BEHAVIOR-1K sparse-checkout disable || true
+git submodule update --init --recursive --remote
+```
+
+If the existing checkout was created with `--filter=blob:none`, recloning is
+still preferred because Git may keep partial-clone configuration in each
+submodule.
+
+`setup.sh` also checks the submodules and initializes or synchronizes them when
+needed, but it uses a shallow, filtered checkout to save time and disk space. If
+you need to preserve complete submodule checkouts during setup, initialize the
+submodules first with the complete commands above and run:
+
+```bash
+bash setup.sh --skip-submodule-update --no-behavior-sparse-checkout
 ```
 
 For a reproducible checkout, set explicit pins before running setup:

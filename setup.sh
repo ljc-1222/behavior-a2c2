@@ -469,7 +469,7 @@ checkout_submodule_pin_if_requested() {
   local expected="$3"
   local url
 
-  [ -n "$expected" ] || return
+  [ -n "$expected" ] || return 0
   is_git_checkout "$dir" || die "$name is not checked out at $dir"
 
   log "Checking out $name submodule pin: $expected"
