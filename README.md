@@ -417,7 +417,7 @@ Replace Terminal 1 with the A2C2 server below and use
 `RGBWrapper`. The server keeps the OpenPI-COMET base policy in the loop, caches
 each base action chunk and base-policy latent, then runs the A2C2 residual head
 at every environment step using the latest RGBD observation and task-language
-prompt before returning `base_action + residual`.
+prompt before returning `clip(base_action + residual)`.
 
 ```bash
 cd "$B1K_ROOT/openpi-comet"
@@ -457,6 +457,11 @@ and adds `observation.task_info` from BEHAVIOR's task low-dimensional
 observation source, matching the training parquet field. `RGBWrapper` is only
 sufficient for the baseline OpenPI evaluation.
 
+The A2C2 server also returns a per-step diagnostic payload over the websocket.
+BEHAVIOR evaluation records it in each rollout metrics JSON under
+`a2c2_online`, including action clipping rates, residual magnitudes, action
+smoothness, gripper command timing, and end-effector motion proxies.
+
 Fast online smoke test:
 
 ```bash
@@ -469,7 +474,9 @@ pose, and task-info fields, a fake base policy, and a deterministic A2C2 head.
 It first checks that the pinned `openpi-comet` exposes the latent APIs, verifies
 that legacy no-RGBD/task-language checkpoint configs are rejected, then checks
 that each residual sees the latest observation in the expected tensor shapes and
-the action sent to the environment is exactly `base_action + residual`.
+the action sent to the environment is clipped to the R1Pro action ranges after
+adding the residual to the base action. It also validates that the BEHAVIOR
+metrics accumulator can serialize the `a2c2_online` payload.
 
 ## Submodule Maintenance
 

@@ -429,8 +429,19 @@ each environment step t+k:
   selected_base_action = cached actions[k]
   time_feature = [sin(2*pi*k/(H-1)), cos(2*pi*k/(H-1))]
   residual = A2C2(obs[t+k], selected_base_action, cached chunk, prefix_z, time_feature)
-  execute selected_base_action + residual
+  corrected_action = clip(selected_base_action + residual, R1Pro action ranges)
+  execute corrected_action
 ```
+
+The final online action is clipped after residual addition. Non-gripper R1Pro
+dimensions use the BEHAVIOR `JOINT_RANGE` limits, while the two gripper command
+dimensions are clipped to `[-1, 1]`.
+
+Each online step also exposes a compact A2C2 diagnostic payload through the
+websocket response. The BEHAVIOR evaluator writes the aggregated
+`a2c2_online` metrics into the rollout JSON, covering action clipping rates,
+residual magnitudes, action smoothness, gripper command timing, and
+end-effector motion proxies.
 
 `serve_a2c2_b1k.py` accepts only RGBD + task-language A2C2 checkpoints. The
 checkpoint loader rejects older artifacts whose serialized config does not
@@ -455,7 +466,9 @@ config is rejected, then runs a fake BEHAVIOR environment for five steps. It
 checks that base chunks are fetched at environment steps 0 and 3, correction
 offsets are 0, 1, 2, 0, 1, the correction head receives RGBD, language, camera,
 task-info, and policy-timing tensors with the online evaluation shapes, and the
-fake environment receives `base_action + residual` for every step.
+fake environment receives a corrected action clipped to the R1Pro action ranges
+for every step. It also validates the `a2c2_online` metrics accumulator and JSON
+serialization path.
 
 ## OpenPI Integration Notes
 
