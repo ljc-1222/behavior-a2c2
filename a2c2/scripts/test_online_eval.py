@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import importlib.util
 import inspect
+import json
 import os
 from pathlib import Path
 import sys
@@ -24,7 +26,17 @@ if client_src.is_dir():
     sys.path.insert(0, str(client_src))
 
 from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig, config_from_checkpoint_payload  # noqa: E402
-from online import A2C2B1KPolicyWrapper  # noqa: E402
+from online import A2C2B1KPolicyWrapper, R1PRO_ACTION_HIGH, R1PRO_ACTION_LOW  # noqa: E402
+
+
+metrics_spec = importlib.util.spec_from_file_location(
+    "a2c2_online_metrics",
+    WORKSPACE_ROOT / "BEHAVIOR-1K" / "OmniGibson" / "omnigibson" / "learning" / "a2c2_online_metrics.py",
+)
+assert metrics_spec is not None and metrics_spec.loader is not None
+metrics_module = importlib.util.module_from_spec(metrics_spec)
+metrics_spec.loader.exec_module(metrics_module)
+A2C2OnlineMetricAccumulator = metrics_module.A2C2OnlineMetricAccumulator
 
 
 ACTION_DIM = 23
@@ -57,27 +69,22 @@ def check_legacy_checkpoint_rejected() -> None:
     try:
         config_from_checkpoint_payload(legacy_payload, context="legacy smoke checkpoint")
     except ValueError as exc:
-        assert "Pre-RGBD/task-language" in str(exc)
+        assert "Pre-RGB/task-language" in str(exc)
     else:
         raise AssertionError("Legacy A2C2 checkpoint config was accepted.")
 
-    try:
-        A2C2CorrectionHead(
-            A2C2CorrectionHeadConfig(
-                action_horizon=HORIZON,
-                use_rgb=True,
-                use_depth=False,
-                use_language=True,
-                rgb_backbone="small-cnn",
-                depth_backbone="small-cnn",
-                pretrained_rgb=False,
-                pretrained_depth=False,
-            )
+    A2C2CorrectionHead(
+        A2C2CorrectionHeadConfig(
+            action_horizon=HORIZON,
+            use_rgb=True,
+            use_depth=False,
+            use_language=True,
+            rgb_backbone="small-cnn",
+            depth_backbone="small-cnn",
+            pretrained_rgb=False,
+            pretrained_depth=False,
         )
-    except ValueError as exc:
-        assert "depth" in str(exc).lower()
-    else:
-        raise AssertionError("A2C2 model accepted a config without depth.")
+    )
 
 
 class FakeBasePolicy:
@@ -103,7 +110,7 @@ class FakeBasePolicy:
         )
         actions = np.zeros((HORIZON, ACTION_DIM), dtype=np.float32)
         for offset in range(HORIZON):
-            actions[offset] = call_index * 100.0 + offset * 10.0 + np.arange(ACTION_DIM, dtype=np.float32) * 0.001
+            actions[offset] = expected_base(call_index, offset)
         return {
             "actions": actions,
             "prefix_z": np.full((Z_DIM,), call_index + 0.5, dtype=np.float32),
@@ -126,7 +133,11 @@ class RecordingCorrectionHead:
         **kwargs,
     ) -> torch.Tensor:
         step = float(observation_state[0, 0].detach().cpu())
-        residual = torch.full_like(selected_base_action, step)
+        residual = torch.as_tensor(
+            expected_residual(step),
+            dtype=selected_base_action.dtype,
+            device=selected_base_action.device,
+        )[None]
         optional = {key: value for key, value in kwargs.items() if value is not None}
         self.calls.append(
             {
@@ -210,6 +221,8 @@ def make_tiny_checkpoint(path: Path) -> None:
         dropout=0.0,
         mlp_hidden_dim=64,
         use_rgb=True,
+        rgb_input_kind="resnet18-features",
+        rgb_feature_dim=512,
         use_depth=True,
         use_language=True,
         use_cam_rel_poses=True,
@@ -236,12 +249,41 @@ def make_tiny_checkpoint(path: Path) -> None:
 
 
 def expected_base(call_index: int, offset: int) -> np.ndarray:
-    return call_index * 100.0 + offset * 10.0 + np.arange(ACTION_DIM, dtype=np.float32) * 0.001
+    center = (R1PRO_ACTION_LOW + R1PRO_ACTION_HIGH) * 0.5
+    half_span = (R1PRO_ACTION_HIGH - R1PRO_ACTION_LOW) * 0.5
+    pattern = ((np.arange(ACTION_DIM, dtype=np.float32) % 5.0) - 2.0) * 0.08
+    pattern += float(call_index) * 0.02 + float(offset) * 0.03
+    return (center + half_span * pattern).astype(np.float32, copy=False)
+
+
+def expected_residual(step: float) -> np.ndarray:
+    residual = np.full((ACTION_DIM,), float(step), dtype=np.float32)
+    residual[0] = -2.0 - float(step)
+    residual[14] = 2.0 + float(step)
+    residual[22] = -2.0 - float(step)
+    return residual
 
 
 def expected_time_feature(offset: int) -> np.ndarray:
     phase = 2.0 * np.pi * float(offset) / float(HORIZON - 1)
     return np.array([np.sin(phase), np.cos(phase)], dtype=np.float32)
+
+
+def copy_a2c2_info(info: dict) -> dict:
+    return {key: value.copy() if isinstance(value, np.ndarray) else value for key, value in info.items()}
+
+
+def fake_proprio(step: int, *, left_open: bool, right_open: bool) -> np.ndarray:
+    proprio = np.zeros((STATE_DIM,), dtype=np.float32)
+    proprio[186:189] = np.array([0.01 * step, 0.02 * step, 0.03 * step], dtype=np.float32)
+    proprio[225:228] = np.array([0.015 * step, 0.01 * step, 0.02 * step], dtype=np.float32)
+    angle = 0.01 * step
+    quat = np.array([0.0, 0.0, np.sin(angle / 2.0), np.cos(angle / 2.0)], dtype=np.float32)
+    proprio[189:193] = quat
+    proprio[228:232] = quat
+    proprio[193:195] = 0.05 if left_open else 0.0
+    proprio[232:234] = 0.05 if right_open else 0.0
+    return proprio
 
 
 def run_smoke() -> None:
@@ -265,8 +307,11 @@ def run_smoke() -> None:
         policy.a2c2_model = recorder
 
         env = FakeBehaviorEnv()
+        a2c2_infos = []
         for _ in range(5):
             action = policy.act(env.observe())
+            assert policy.last_a2c2_info is not None
+            a2c2_infos.append(copy_a2c2_info(policy.last_a2c2_info))
             env.step(action)
 
     assert [call["state0"] for call in base_policy.calls] == [0.0, 3.0]
@@ -291,16 +336,16 @@ def run_smoke() -> None:
             "language_token_mask",
             "language_tokens",
             "policy_infer_ms",
-            "rgb_images",
+            "rgb_features",
             "task_info",
         ]
         assert record["optional_shapes"] == {
             "cam_rel_poses": (1, 21),
             "depth_images": (1, 3, 3, IMAGE_SIZE, IMAGE_SIZE),
+            "rgb_features": (1, 3, 512),
             "language_token_mask": (1, LANGUAGE_MAX_LENGTH),
             "language_tokens": (1, LANGUAGE_MAX_LENGTH),
             "policy_infer_ms": (1, 1),
-            "rgb_images": (1, 3, 3, IMAGE_SIZE, IMAGE_SIZE),
             "task_info": (1, TASK_INFO_DIM),
         }
         assert record["step"] == float(step)
@@ -310,13 +355,69 @@ def run_smoke() -> None:
         np.testing.assert_array_equal(record["valid_action_mask"], np.ones((HORIZON,), dtype=np.bool_))
         assert record["base_policy_z0"] == chunk_call + 0.5
 
-        expected_action = expected_base(chunk_call, offset) + float(step)
+        unclipped_action = expected_base(chunk_call, offset) + expected_residual(float(step))
+        expected_action = np.clip(unclipped_action, R1PRO_ACTION_LOW, R1PRO_ACTION_HIGH)
         np.testing.assert_allclose(env.actions[step], expected_action, atol=1e-6)
+        np.testing.assert_allclose(env.actions[step][0], R1PRO_ACTION_LOW[0], atol=1e-6)
+        np.testing.assert_allclose(env.actions[step][14], R1PRO_ACTION_HIGH[14], atol=1e-6)
+        np.testing.assert_allclose(env.actions[step][22], R1PRO_ACTION_LOW[22], atol=1e-6)
+        unclipped_dims = np.isclose(expected_action, unclipped_action, atol=1e-6)
+        if np.any(unclipped_dims):
+            np.testing.assert_allclose(env.actions[step][unclipped_dims], unclipped_action[unclipped_dims], atol=1e-6)
+
+        info = a2c2_infos[step]
+        np.testing.assert_allclose(info["base_action"], expected_base(chunk_call, offset), atol=1e-6)
+        np.testing.assert_allclose(info["residual_action"], expected_residual(float(step)), atol=1e-6)
+        np.testing.assert_allclose(info["corrected_action_unclipped"], unclipped_action, atol=1e-6)
+        np.testing.assert_allclose(info["corrected_action"], expected_action, atol=1e-6)
+        np.testing.assert_array_equal(info["clip_mask"], np.not_equal(expected_action, unclipped_action))
+        assert info["chunk_offset"] == offset
+        assert info["execute_len"] == 3
+        assert info["step_counter"] == step
+
+    accumulator = A2C2OnlineMetricAccumulator()
+    for step, (info, action) in enumerate(zip(a2c2_infos, env.actions, strict=True)):
+        pre_obs = {
+            "robot_r1::proprio": fake_proprio(
+                step,
+                left_open=bool(step % 2),
+                right_open=not bool(step % 2),
+            )
+        }
+        post_obs = {
+            "robot_r1::proprio": fake_proprio(
+                step + 1,
+                left_open=bool(action[14] > 0.0),
+                right_open=bool(action[22] > 0.0),
+            )
+        }
+        accumulator.step_callback(
+            pre_obs=pre_obs,
+            post_obs=post_obs,
+            action=action,
+            policy_info={"a2c2": info},
+        )
+    metrics = accumulator.gather_results(
+        success=False,
+        q_score_final=0.0,
+        steps=len(env.actions),
+        n_trials=1,
+        n_success_trials=0,
+    )
+    json.dumps(metrics)
+    online_metrics = metrics["a2c2_online"]
+    assert online_metrics["rollout"]["q_score_final"] == 0.0
+    assert online_metrics["actions"]["out_of_range_action_ratio"] > 0.0
+    assert online_metrics["actions"]["per_group_residual_error"]["left_gripper"]["rmse_mean"] is not None
+    assert online_metrics["smoothness"]["action_jerk_norm"]["count"] > 0
+    assert online_metrics["end_effector_proxy"]["left"]["position_delta"]["mean"] is not None
 
     print("online A2C2 smoke test passed")
     print("OpenPI prefix latent API surface checked")
-    print("legacy no-RGBD/task-language checkpoint rejection checked")
+    print("legacy no-RGB/task-language checkpoint rejection checked")
     print("task::low_dim task-info source and truncation checked")
+    print("R1Pro action-range clipping checked")
+    print("A2C2 online metrics payload and accumulator checked")
     print(f"base policy calls at env steps: {[call['state0'] for call in base_policy.calls]}")
     print(f"correction offsets: {expected_offsets}")
     print(f"env actions checked: {len(env.actions)}")

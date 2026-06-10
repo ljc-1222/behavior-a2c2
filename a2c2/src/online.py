@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from dataset import DEPTH_VIDEO_COLUMNS, preprocess_video_frame, tokenize_language_instruction
-from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig, config_from_checkpoint_payload
+from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig, ResNet18ImageEncoder, config_from_checkpoint_payload
 from openpi.shared.eval_b1k_wrapper import B1KPolicyWrapper
 
 
@@ -30,6 +30,62 @@ TASK_INFO_KEYS = (
     "task::low_dim",
     "task_info",
     "robot_r1::task_info",
+)
+R1PRO_ACTION_LOW = np.array(
+    [
+        -0.75,
+        -0.75,
+        -1.0,
+        -1.1345,
+        -2.7925,
+        -1.8326,
+        -3.0543,
+        -4.4506,
+        -0.1745,
+        -2.3562,
+        -2.0944,
+        -2.3562,
+        -1.0472,
+        -1.5708,
+        -1.0,
+        -4.4506,
+        -3.1416,
+        -2.3562,
+        -2.0944,
+        -2.3562,
+        -1.0472,
+        -1.5708,
+        -1.0,
+    ],
+    dtype=np.float32,
+)
+R1PRO_ACTION_HIGH = np.array(
+    [
+        0.75,
+        0.75,
+        1.0,
+        1.8326,
+        2.5307,
+        1.5708,
+        3.0543,
+        1.3090,
+        3.1416,
+        2.3562,
+        0.3491,
+        2.3562,
+        1.0472,
+        1.5708,
+        1.0,
+        1.3090,
+        0.1745,
+        2.3562,
+        0.3491,
+        2.3562,
+        1.0472,
+        1.5708,
+        1.0,
+    ],
+    dtype=np.float32,
 )
 
 
@@ -110,6 +166,15 @@ def _as_action_chunk(value: Any, *, horizon: int, action_dim: int) -> tuple[np.n
     return chunk, valid, returned_len
 
 
+def _clip_r1pro_action(action: np.ndarray) -> np.ndarray:
+    arr = np.asarray(action, dtype=np.float32)
+    if arr.shape != R1PRO_ACTION_LOW.shape:
+        raise ValueError(f"R1Pro action must have shape {R1PRO_ACTION_LOW.shape}, got {arr.shape}.")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("A2C2 produced a non-finite corrected action.")
+    return np.clip(arr, R1PRO_ACTION_LOW, R1PRO_ACTION_HIGH).astype(np.float32, copy=False)
+
+
 class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
     """Wrap a B1K OpenPI policy and add an online A2C2 residual per control step."""
 
@@ -164,6 +229,19 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
         self.a2c2_model = A2C2CorrectionHead(self.a2c2_config).to(self.a2c2_device)
         self.a2c2_model.load_state_dict(payload["model_state_dict"])
         self.a2c2_model.eval()
+        self._rgb_feature_encoder: ResNet18ImageEncoder | None = None
+        if self.a2c2_config.use_rgb and self.a2c2_config.rgb_input_kind == "resnet18-features":
+            if self.a2c2_config.rgb_feature_dim != 512:
+                raise ValueError(
+                    "Online ResNet18 RGB feature extraction expects rgb_feature_dim=512, "
+                    f"got {self.a2c2_config.rgb_feature_dim}."
+                )
+            self._rgb_feature_encoder = ResNet18ImageEncoder(
+                512,
+                pretrained=self.a2c2_config.pretrained_rgb,
+                freeze=True,
+            ).to(self.a2c2_device)
+            self._rgb_feature_encoder.eval()
 
         self.a2c2_language_instruction = a2c2_language_instruction or self.task_prompt
         tokens, token_mask = tokenize_language_instruction(
@@ -175,6 +253,7 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
         self._language_token_mask = token_mask
 
         self._active_chunk: _ActiveChunk | None = None
+        self.last_a2c2_info: dict[str, Any] | None = None
         self._last_policy_prompt = self.task_prompt
         logger.info(
             "Loaded A2C2 checkpoint %s on %s with image_size=%s, use_base_policy_z=%s.",
@@ -187,6 +266,7 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
     def reset(self) -> None:
         super().reset()
         self._active_chunk = None
+        self.last_a2c2_info = None
 
     def act(self, input_obs: dict) -> torch.Tensor:
         processed_obs = self.process_obs(input_obs)
@@ -197,19 +277,20 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
         chunk = self._active_chunk
         offset = chunk.offset
         selected_base_action = chunk.base_action_chunk[offset].copy()
-        corrected_action = self._correct_action(
+        corrected_action, a2c2_info = self._correct_action(
             raw_obs=input_obs,
             processed_obs=processed_obs,
             active_chunk=chunk,
             chunk_offset=offset,
         )
+        self.last_a2c2_info = a2c2_info
         chunk.offset += 1
 
         if not np.all(np.isfinite(corrected_action)):
             raise ValueError("A2C2 produced a non-finite corrected action.")
         self.step_counter += 1
         logger.debug(
-            "A2C2 step=%s offset=%s residual_norm=%.6f.",
+            "A2C2 step=%s offset=%s applied_delta_norm=%.6f.",
             self.step_counter,
             offset,
             float(np.linalg.norm(corrected_action - selected_base_action)),
@@ -291,7 +372,7 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
         processed_obs: dict[str, np.ndarray],
         active_chunk: _ActiveChunk,
         chunk_offset: int,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, dict[str, Any]]:
         cfg = self.a2c2_config
         selected_base_action = active_chunk.base_action_chunk[chunk_offset]
         time_feature = A2C2CorrectionHead.make_time_feature(
@@ -309,7 +390,10 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
         }
 
         if cfg.use_rgb:
-            batch["rgb_images"] = self._tensor(self._rgb_images(processed_obs))
+            if cfg.rgb_input_kind == "resnet18-features":
+                batch["rgb_features"] = self._rgb_features(processed_obs)
+            else:
+                batch["rgb_images"] = self._tensor(self._rgb_images(processed_obs))
         if cfg.use_depth:
             batch["depth_images"] = self._tensor(self._depth_images(raw_obs))
         if cfg.use_language:
@@ -330,6 +414,7 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
             batch["time_feature"],
             batch["valid_action_mask"],
             rgb_images=batch.get("rgb_images"),
+            rgb_features=batch.get("rgb_features"),
             depth_images=batch.get("depth_images"),
             language_tokens=batch.get("language_tokens"),
             language_token_mask=batch.get("language_token_mask"),
@@ -338,7 +423,26 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
             policy_infer_ms=batch.get("policy_infer_ms"),
         )
         delta_np = delta.detach().cpu().numpy()[0].astype(np.float32, copy=False)
-        return selected_base_action + self.a2c2_correction_scale * delta_np
+        residual_action = (self.a2c2_correction_scale * delta_np).astype(np.float32, copy=False)
+        corrected_action_unclipped = (selected_base_action + residual_action).astype(np.float32, copy=False)
+        clip_mask = np.logical_or(
+            corrected_action_unclipped < R1PRO_ACTION_LOW,
+            corrected_action_unclipped > R1PRO_ACTION_HIGH,
+        )
+        corrected_action = _clip_r1pro_action(corrected_action_unclipped)
+        a2c2_info = {
+            "version": 1,
+            "base_action": selected_base_action.astype(np.float32, copy=True),
+            "residual_action": residual_action.astype(np.float32, copy=True),
+            "corrected_action_unclipped": corrected_action_unclipped.astype(np.float32, copy=True),
+            "corrected_action": corrected_action.astype(np.float32, copy=True),
+            "clip_mask": clip_mask.astype(np.bool_, copy=True),
+            "chunk_offset": int(chunk_offset),
+            "execute_len": int(active_chunk.execute_len),
+            "step_counter": int(self.step_counter),
+            "correction_scale": float(self.a2c2_correction_scale),
+        }
+        return corrected_action, a2c2_info
 
     def _tensor(self, value: Any, *, dtype: torch.dtype | None = None) -> torch.Tensor:
         if torch.is_tensor(value):
@@ -384,6 +488,16 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
             out[0, idx] = np.transpose(values[..., :3], (2, 0, 1))
         return out
 
+    def _rgb_features(self, processed_obs: dict[str, np.ndarray]) -> torch.Tensor:
+        if self._rgb_feature_encoder is None:
+            raise RuntimeError("A2C2 checkpoint expects RGB features, but the online feature encoder is not initialized.")
+        images = self._tensor(self._rgb_images(processed_obs))
+        batch_size, num_views = images.shape[:2]
+        flat = images.reshape(batch_size * num_views, *images.shape[2:])
+        with torch.no_grad():
+            features = self._rgb_feature_encoder(flat)
+        return features.reshape(batch_size, num_views, -1)
+
     def _depth_images(self, raw_obs: dict) -> np.ndarray:
         import cv2
 
@@ -421,5 +535,5 @@ class A2C2B1KPolicyWrapper(B1KPolicyWrapper):
     def _missing_array(self, name: str, shape: tuple[int, ...]) -> np.ndarray:
         raise KeyError(
             f"A2C2 checkpoint requires {name}, but the current online observation does not provide it. "
-            "Use an online BEHAVIOR wrapper/checkpoint that supplies every enabled RGBD/task-language feature."
+            "Use an online BEHAVIOR wrapper/checkpoint that supplies every enabled RGB/depth/task-language feature."
         )

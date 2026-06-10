@@ -10,7 +10,7 @@ import torch
 from torch import Tensor, nn
 
 
-REQUIRED_A2C2_FEATURE_FLAGS = ("use_rgb", "use_depth", "use_language")
+REQUIRED_A2C2_FEATURE_FLAGS = ("use_rgb", "use_language")
 REQUIRED_A2C2_FEATURE_LABELS = {
     "use_rgb": "RGB",
     "use_depth": "depth",
@@ -36,6 +36,8 @@ class A2C2CorrectionHeadConfig:
     num_rgb_views: int = 3
     num_depth_views: int = 3
     image_channels: int = 3
+    rgb_input_kind: str = "images"
+    rgb_feature_dim: int = 512
     rgb_backbone: str = "resnet18"
     depth_backbone: str = "resnet18"
     depth_preprocess: str = "hha"
@@ -70,9 +72,9 @@ def validate_required_a2c2_features(
     if disabled:
         labels = ", ".join(REQUIRED_A2C2_FEATURE_LABELS[flag] for flag in disabled)
         raise ValueError(
-            f"{context} must enable RGB, depth, and task-language inputs. "
+            f"{context} must enable RGB and task-language inputs. "
             f"Disabled required feature(s): {labels}. "
-            "Pre-RGBD/task-language A2C2 artifacts are unsupported."
+            "Pre-RGB/task-language A2C2 artifacts are unsupported."
         )
 
 
@@ -85,7 +87,7 @@ def config_from_checkpoint_payload(
     if not isinstance(raw, dict):
         raise ValueError(
             f"{context} is missing a serialized A2C2 config. "
-            "Pre-RGBD/task-language A2C2 artifacts are unsupported."
+            "Pre-RGB/task-language A2C2 artifacts are unsupported."
         )
 
     missing = [flag for flag in REQUIRED_A2C2_FEATURE_FLAGS if flag not in raw]
@@ -93,7 +95,7 @@ def config_from_checkpoint_payload(
         labels = ", ".join(REQUIRED_A2C2_FEATURE_LABELS[flag] for flag in missing)
         raise ValueError(
             f"{context} config is missing required feature flag(s): {labels}. "
-            "Pre-RGBD/task-language A2C2 artifacts are unsupported."
+            "Pre-RGB/task-language A2C2 artifacts are unsupported."
         )
 
     valid_keys = {field.name for field in fields(A2C2CorrectionHeadConfig)}
@@ -317,12 +319,19 @@ class A2C2CorrectionHead(nn.Module):
         self.action_proj = nn.Linear(cfg.action_dim, cfg.dim_model)
 
         if cfg.use_rgb:
-            self.rgb_encoder = build_image_encoder(
-                cfg.rgb_backbone,
-                out_dim=cfg.dim_model,
-                pretrained=cfg.pretrained_rgb,
-                freeze=cfg.freeze_rgb,
-            )
+            if cfg.rgb_input_kind == "images":
+                self.rgb_encoder = build_image_encoder(
+                    cfg.rgb_backbone,
+                    out_dim=cfg.dim_model,
+                    pretrained=cfg.pretrained_rgb,
+                    freeze=cfg.freeze_rgb,
+                )
+            elif cfg.rgb_input_kind == "resnet18-features":
+                self.rgb_feature_proj = (
+                    nn.Identity() if cfg.rgb_feature_dim == cfg.dim_model else nn.Linear(cfg.rgb_feature_dim, cfg.dim_model)
+                )
+            else:
+                raise ValueError(f"Unknown rgb_input_kind: {cfg.rgb_input_kind!r}")
             self.rgb_view_embedding = nn.Parameter(torch.zeros(cfg.num_rgb_views, cfg.dim_model))
         if cfg.use_depth:
             self.depth_encoder = build_image_encoder(
@@ -429,6 +438,7 @@ class A2C2CorrectionHead(nn.Module):
         valid_action_mask: Tensor | None = None,
         *,
         rgb_images: Tensor | None = None,
+        rgb_features: Tensor | None = None,
         depth_images: Tensor | None = None,
         language_tokens: Tensor | None = None,
         language_token_mask: Tensor | None = None,
@@ -446,6 +456,7 @@ class A2C2CorrectionHead(nn.Module):
             time_feature: sinusoidal chunk-index feature, shape [B, 2].
             valid_action_mask: optional bool tensor [B, H], True for valid chunk entries.
             rgb_images: latest RGB views, shape [B, V, 3, H, W], values in [-1, 1].
+            rgb_features: cached RGB features, shape [B, V, rgb_feature_dim].
             depth_images: latest depth views, shape [B, V, 3, H, W], values in [-1, 1].
             language_tokens: hashed instruction token ids, shape [B, L].
             language_token_mask: bool non-padding mask, shape [B, L].
@@ -469,6 +480,7 @@ class A2C2CorrectionHead(nn.Module):
             base_policy_z=base_policy_z,
             time_feature=time_feature,
             rgb_images=rgb_images,
+            rgb_features=rgb_features,
             depth_images=depth_images,
             language_tokens=language_tokens,
             language_token_mask=language_token_mask,
@@ -521,8 +533,13 @@ class A2C2CorrectionHead(nn.Module):
             add_tokens("policy_infer_ms", policy_token, self.TYPE_POLICY_TIMING)
 
         if cfg.use_rgb:
-            assert rgb_images is not None
-            add_tokens("rgb", self._encode_image_views(rgb_images, self.rgb_encoder, self.rgb_view_embedding), self.TYPE_RGB)
+            if cfg.rgb_input_kind == "resnet18-features":
+                assert rgb_features is not None
+                rgb_tokens = self._project_feature_views(rgb_features, self.rgb_feature_proj, self.rgb_view_embedding)
+            else:
+                assert rgb_images is not None
+                rgb_tokens = self._encode_image_views(rgb_images, self.rgb_encoder, self.rgb_view_embedding)
+            add_tokens("rgb", rgb_tokens, self.TYPE_RGB)
 
         if cfg.use_depth:
             assert depth_images is not None
@@ -563,6 +580,14 @@ class A2C2CorrectionHead(nn.Module):
         view = view_embedding[:num_views].to(device=images.device, dtype=images.dtype).unsqueeze(0)
         return encoded + view
 
+    def _project_feature_views(self, features: Tensor, projector: nn.Module, view_embedding: Tensor) -> Tensor:
+        cfg = self.config
+        batch_size, num_views = features.shape[:2]
+        flat = features.reshape(batch_size * num_views, cfg.rgb_feature_dim)
+        encoded = projector(flat).reshape(batch_size, num_views, cfg.dim_model)
+        view = view_embedding[:num_views].to(device=features.device, dtype=encoded.dtype).unsqueeze(0)
+        return encoded + view
+
     @staticmethod
     def _pool_span(encoded: Tensor, span: tuple[int, int]) -> Tensor:
         start, end = span
@@ -580,6 +605,7 @@ class A2C2CorrectionHead(nn.Module):
         base_policy_z: Tensor,
         time_feature: Tensor,
         rgb_images: Tensor | None,
+        rgb_features: Tensor | None,
         depth_images: Tensor | None,
         language_tokens: Tensor | None,
         language_token_mask: Tensor | None,
@@ -601,7 +627,10 @@ class A2C2CorrectionHead(nn.Module):
         if time_feature.ndim != 2 or time_feature.shape[-1] != cfg.time_dim:
             raise ValueError(f"time_feature must have shape [B, {cfg.time_dim}].")
         if cfg.use_rgb:
-            self._validate_images("rgb_images", rgb_images, cfg.num_rgb_views)
+            if cfg.rgb_input_kind == "resnet18-features":
+                self._validate_features("rgb_features", rgb_features, cfg.num_rgb_views, cfg.rgb_feature_dim)
+            else:
+                self._validate_images("rgb_images", rgb_images, cfg.num_rgb_views)
         if cfg.use_depth:
             self._validate_images("depth_images", depth_images, cfg.num_depth_views)
         if cfg.use_language:
@@ -627,6 +656,15 @@ class A2C2CorrectionHead(nn.Module):
             raise ValueError(f"{name} must have shape [B, V, C, H, W].")
         if images.shape[1] != expected_views or images.shape[2] != cfg.image_channels:
             raise ValueError(f"{name} must have shape [B, {expected_views}, {cfg.image_channels}, H, W].")
+
+    @staticmethod
+    def _validate_features(name: str, features: Tensor | None, expected_views: int, feature_dim: int) -> None:
+        if features is None:
+            raise ValueError(f"{name} is required by the model config.")
+        if features.ndim != 3:
+            raise ValueError(f"{name} must have shape [B, V, D].")
+        if features.shape[1] != expected_views or features.shape[2] != feature_dim:
+            raise ValueError(f"{name} must have shape [B, {expected_views}, {feature_dim}].")
 
     def _validate_language(self, tokens: Tensor | None, token_mask: Tensor | None) -> None:
         cfg = self.config

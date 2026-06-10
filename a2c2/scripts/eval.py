@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -23,6 +24,7 @@ from dataset import (  # noqa: E402
     resolve_language_instruction,
     split_episode_pairs,
 )
+from loss import A2C2ResidualLoss, loss_config_from_dict  # noqa: E402
 from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig, config_from_checkpoint_payload  # noqa: E402
 
 
@@ -55,6 +57,19 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="RGB/depth resize size. Defaults to the checkpoint arg, then 224.",
     )
+    parser.add_argument(
+        "--rgb-cache-kind",
+        choices=("none", "frames", "resnet18-features"),
+        default=None,
+        help="RGB data source. Defaults to the checkpoint arg, then mp4 decoding.",
+    )
+    parser.add_argument(
+        "--rgb-cache-root",
+        type=Path,
+        default=None,
+        help="Task-level RGB cache root. Defaults to <dataset-root>/rgb_features_resnet18/<task-dir> for feature cache.",
+    )
+    parser.add_argument("--rgb-feature-dim", type=int, default=None)
     parser.add_argument("--language-instruction", default=None, help="Override the dataset metadata instruction.")
     return parser.parse_args()
 
@@ -75,12 +90,17 @@ def image_size_from_checkpoint(payload: dict, raw_image_size: int | None) -> int
 def build_dataset_kwargs(
     cfg: A2C2CorrectionHeadConfig,
     image_size: int,
+    rgb_cache_kind: str,
+    rgb_cache_root: Path | None,
     language_instruction: str | None,
     batches_per_episode: int,
 ) -> dict:
     return {
         "batches_per_episode": batches_per_episode,
         "use_rgb": cfg.use_rgb,
+        "rgb_cache_kind": rgb_cache_kind,
+        "rgb_cache_root": rgb_cache_root,
+        "rgb_feature_dim": cfg.rgb_feature_dim,
         "use_depth": cfg.use_depth,
         "image_size": image_size,
         "depth_preprocess": cfg.depth_preprocess,
@@ -106,6 +126,7 @@ def predict_delta(model: A2C2CorrectionHead, batch: dict[str, torch.Tensor]) -> 
         batch["time_feature"],
         batch["valid_action_mask"],
         rgb_images=batch.get("rgb_images"),
+        rgb_features=batch.get("rgb_features"),
         depth_images=batch.get("depth_images"),
         language_tokens=batch.get("language_tokens"),
         language_token_mask=batch.get("language_token_mask"),
@@ -121,12 +142,26 @@ def main() -> None:
     payload = torch.load(args.checkpoint.expanduser(), map_location=device)
     cfg = config_from_checkpoint(payload)
     image_size = image_size_from_checkpoint(payload, args.image_size)
+    checkpoint_args = payload.get("args", {})
+    loss_config = loss_config_from_dict(payload.get("loss_config"))
+    action_stats = payload.get("action_stats")
+    if args.rgb_feature_dim is not None:
+        cfg = replace(cfg, rgb_feature_dim=args.rgb_feature_dim)
+    if args.rgb_cache_kind is not None:
+        rgb_cache_kind = args.rgb_cache_kind
+    else:
+        rgb_cache_kind = checkpoint_args.get("rgb_cache_kind")
+        if rgb_cache_kind is None:
+            rgb_cache_kind = "resnet18-features" if cfg.rgb_input_kind == "resnet18-features" else "none"
     model = A2C2CorrectionHead(cfg).to(device)
     model.load_state_dict(payload["model_state_dict"])
     model.eval()
+    loss_fn = A2C2ResidualLoss(
+        loss_config,
+        action_scale=action_stats["scale"] if action_stats is not None else None,
+    ).to(device)
 
     dataset_root = resolve_dataset_root(args.dataset_root)
-    checkpoint_args = payload.get("args", {})
     pairs = discover_episode_pairs(dataset_root, args.task_dir)
     language_instruction = args.language_instruction or checkpoint_args.get("language_instruction")
     if language_instruction is None:
@@ -134,6 +169,8 @@ def main() -> None:
     dataset_kwargs = build_dataset_kwargs(
         cfg,
         image_size,
+        rgb_cache_kind,
+        args.rgb_cache_root,
         language_instruction,
         args.batches_per_episode,
     )
@@ -165,6 +202,7 @@ def main() -> None:
     residual_mae_sum = 0.0
     corrected_mse_sum = 0.0
     base_mse_sum = 0.0
+    loss_component_sums: dict[str, float] = {}
 
     with torch.no_grad():
         for batch in loader:
@@ -181,10 +219,14 @@ def main() -> None:
             residual_mae_sum += F.l1_loss(pred_delta, target_delta, reduction="sum").item()
             corrected_mse_sum += F.mse_loss(corrected_action, expert_action, reduction="sum").item()
             base_mse_sum += F.mse_loss(base_action, expert_action, reduction="sum").item()
+            _loss, loss_metrics = loss_fn(pred_delta, batch)
+            for key, value in loss_metrics.items():
+                loss_component_sums[key] = loss_component_sums.get(key, 0.0) + float(value.detach().cpu()) * batch_size
             if total >= args.num_samples:
                 break
 
     denom = max(total * cfg.action_dim, 1)
+    sample_denom = max(total, 1)
     print(f"dataset_root: {dataset_root}")
     print(f"checkpoint: {args.checkpoint}")
     print(f"image_size: {image_size}")
@@ -193,10 +235,13 @@ def main() -> None:
     print(f"split: {args.split}")
     print(f"episodes: {len(eval_pairs)}")
     print(f"samples: {total}")
+    print(f"loss_preset: {loss_config.preset}")
     print(f"residual_mse: {residual_mse_sum / denom:.8f}")
     print(f"residual_mae: {residual_mae_sum / denom:.8f}")
     print(f"corrected_action_mse: {corrected_mse_sum / denom:.8f}")
     print(f"base_action_mse: {base_mse_sum / denom:.8f}")
+    for key in sorted(loss_component_sums):
+        print(f"loss/{key}: {loss_component_sums[key] / sample_denom:.8f}")
 
 
 if __name__ == "__main__":
