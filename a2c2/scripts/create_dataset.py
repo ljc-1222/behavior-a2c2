@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Download or build the integrated A2C2 dataset.
 
-By default this script downloads only the published task18 dataset variant from
+By default this script downloads only the published task1 dataset variant from
 Hugging Face. Use --download-all-variants only when every dataset variant is
 needed locally.
 
@@ -33,7 +33,7 @@ DEFAULT_SOURCE_ROOT = WORKSPACE_ROOT / "BEHAVIOR-1K/OmniGibson/datasets/2025-cha
 DEFAULT_OPENPI_ROOT = WORKSPACE_ROOT / "openpi-comet"
 DEFAULT_CHECKPOINT_DIR = DEFAULT_OPENPI_ROOT / "checkpoints/pi05-b1kpt50-cs32"
 DEFAULT_CONFIG_NAME = "pi05_b1k-base"
-DEFAULT_TASK_NAME = "tidying_bedroom"
+DEFAULT_TASK_NAME = "picking_up_trash"
 DEFAULT_VARIANT_SUFFIX = "pi05-b1kpt50-cs32_h32_v1"
 DEFAULT_DOWNLOAD_VARIANT = f"{DEFAULT_TASK_NAME}_{DEFAULT_VARIANT_SUFFIX}"
 DEFAULT_OUTPUT_ROOT = WORKSPACE_ROOT / "a2c2_dataset" / DEFAULT_DOWNLOAD_VARIANT
@@ -178,7 +178,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--download-variant",
         default=DEFAULT_DOWNLOAD_VARIANT,
-        help="Dataset variant directory to download from the Hugging Face repo. Defaults to the task18 variant.",
+        help="Dataset variant directory to download from the Hugging Face repo. Defaults to the task1 variant.",
     )
     parser.add_argument(
         "--download-all-variants",
@@ -200,7 +200,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=f"BEHAVIOR task name. Defaults to {DEFAULT_TASK_NAME!r} unless --task-index is set.",
     )
-    parser.add_argument("--task-index", type=int, default=None, help="BEHAVIOR task index. Defaults to task18 via --task-name tidying_bedroom; e.g. 18 for task-0018.")
+    parser.add_argument("--task-index", type=int, default=None, help="BEHAVIOR task index. Defaults to task1 via --task-name picking_up_trash; e.g. 1 for task-0001.")
     parser.add_argument("--action-horizon", type=int, default=32)
     parser.add_argument("--action-dim", type=int, default=23)
     parser.add_argument("--model-action-dim", type=int, default=32)
@@ -282,7 +282,7 @@ def download_published_dataset(args: argparse.Namespace) -> Path:
         ]
         print(f"Variant: {variant}")
         if variant == DEFAULT_DOWNLOAD_VARIANT:
-            print("Download scope: task18 variant only")
+            print("Download scope: task1 variant only")
         else:
             print("Download scope: selected variant only")
     else:
@@ -1322,3 +1322,4 @@ if __name__ == "__main__":
         main()
     except Exception as exc:  # noqa: BLE001 - command-line tool should fail with a concise message.
         raise SystemExit(f"ERROR: {exc}") from exc
+
