@@ -8,8 +8,6 @@ The project evaluated **Task 1 — Picking Up Trash** (`picking_up_trash`) on **
 
 BEHAVIOR's final Q-score measures the **fraction of task-goal conditions satisfied**, permitting partial credit. “Nonzero instances” is not a count of fully completed tasks.
 
-![Task 1 result chart](../assets/task1_qscores.svg)
-
 | Method | Final Q-score (mean) ↑ | SD | Nonzero Q-score instances |
 |:--|--:|--:|--:|
 | **Frozen Comet** | **0.6667** | 0.3944 | 8 / 10 |
@@ -22,7 +20,7 @@ BEHAVIOR's final Q-score measures the **fraction of task-goal conditions satisfi
 
 ## Online action diagnostics
 
-The original evaluation also aggregated per-step diagnostics from the BEHAVIOR wrapper.
+The original evaluation also aggregated per-step diagnostics from the BEHAVIOR wrapper. These help characterize the control behavior; they do not establish which failure mode caused the Q-score drop.
 
 | Policy | Mean residual L2 ↓ | Clipped action dims (%) ↓ | Gripper Acc@5 ↑ | Mean gripper delay (steps) ↓ | Action jerk norm ↓ |
 |:--|--:|--:|--:|--:|--:|
@@ -58,6 +56,6 @@ The experiment is therefore most informative as a **case study of an offline–o
 
 ## Evidence boundaries
 
-These aggregated values were preserved from the original June 2026 project results. The repository does not currently distribute the per-instance rollout JSONs, trained checkpoints, or an exact replay package, and no new training/evaluation was performed for this documentation revision. The tables are historical experimental records, not freshly reproduced measurements.
+These aggregated values were preserved from the original June 2026 project results. The GitHub repository does not currently bundle per-instance rollout JSONs, trained checkpoints, or an exact replay package. A separate [Task 1 ablation Hugging Face repository](https://huggingface.co/ljc-1222/a2c2-task0001-ablation) exists, but its individual files were not verifiable during this review, and no new training/evaluation was performed for this documentation revision. The tables are historical experimental records, not freshly reproduced measurements.
 
 The [2025 Comet result](https://behavior.stanford.edu/challenge/archive/2025/leaderboard.html) (second place, 0.2514 held-out-test Q-score) is **a separate challenge-wide result** and is not directly comparable to our Task 1-only scores.

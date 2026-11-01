@@ -81,7 +81,7 @@ python a2c2/scripts/train.py \
   --seed 42
 ```
 
-Change `--loss-preset` to one of `raw_mse`, `norm_mse`, `norm_huber`, or `norm_huber_gripw` for the other objectives. The script saves its model config, chosen CLI args and action statistics in the checkpoint; use those values when interpreting or loading a particular run.
+Change `--loss-preset` to one of `raw_mse`, `norm_mse`, `norm_huber`, or `norm_huber_gripw` for the other objectives. The script saves its model config, selected CLI arguments and action statistics in the checkpoint; use these values when interpreting or loading a particular run. This example uses current code defaults and is **not a recovered exact command for the historical experiment**.
 
 ## 5. Offline evaluation
 
@@ -129,6 +129,6 @@ For a **frozen baseline** comparison, serve the uncorrected `openpi-comet/script
 
 ## Operational limits
 
-- An A2C2 checkpoint is **not** bundled with this repository. The public results are historical aggregates, not turnkey precomputed predictions.
+- A2C2 checkpoints are **not** bundled in Git. See the [Task 1 ablation artifact page](https://huggingface.co/ljc-1222/a2c2-task0001-ablation) for externally hosted artifacts; this review did not verify individual weight files. The public results are historical aggregates, not turnkey precomputed predictions.
 - The project does not promise exact package/platform compatibility with future versions of OpenPI, OmniGibson or CUDA.
 - A schema-level smoke script exists at `a2c2/scripts/test_online_eval.py`, but it still needs fork dependencies; it was **not rerun** for this README update.

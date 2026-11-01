@@ -8,7 +8,9 @@ We adapted **Asynchronous Action Chunk Correction (A2C2)** to a frozen **OpenPI-
 
 > **Scope:** This repository presents our implementation and original Task 1 experiment. It is a course research project and a **negative-result analysis**, not an improvement over Comet or an official BEHAVIOR leaderboard submission.
 
-![A2C2 correction pipeline](assets/a2c2_pipeline.svg)
+![Schematic of the frozen base policy, latest observations, and action correction head](assets/a2c2_pipeline.svg)
+
+*Architecture schematic: input availability depends on the saved checkpoint configuration.*
 
 ## What we built
 
@@ -18,19 +20,15 @@ We adapted **Asynchronous Action Chunk Correction (A2C2)** to a frozen **OpenPI-
 - **Closed-loop interface:** integrated a per-step correction wrapper and action-range clipping with BEHAVIOR's evaluation interface.
 - **Loss and rollout analysis:** compared raw MSE, range-normalized MSE, normalized Huber, and gripper-weighted normalized Huber, together with action smoothness and clipping diagnostics.
 
-The correction follows:
+At execution time, the head predicts a residual for the current chunk action:
 
-```text
-base chunk A_t, latent z_t = frozen_Comet(observation at t)
-residual Δa_(t,k)         = A2C2(latest observation, A_t[k], z_t, task, k)
-executed action          = clip(A_t[k] + λ · Δa_(t,k))
-```
+$
+\na_{t+k}^{\mathrm{exec}} = \operatorname{clip}\!\left(a_{t,k}^{\mathrm{base}} + \lambda\,\Delta a_{t,k}\right).
+$
 
 The base action horizon is **32 steps**, and each robot action has **23 dimensions**. Details of the token-fusion head, losses, and optional input features are in [Method](docs/method.md).
 
 ## Results: Task 1
-
-![Task 1 Q-score comparison](assets/task1_qscores.svg)
 
 | Policy | Mean final Q-score ↑ | Std. dev. | Instances with Q-score > 0 |
 |:--|--:|--:|--:|
@@ -48,7 +46,7 @@ Our offline validation suggested that learned corrections could reduce the error
 
 The results are consistent with several **hypotheses**, not proven causes: expert-state training versus policy-induced states, per-step residuals disrupting a coherent sampled action chunk, and the mismatch between continuous regression objectives and event-like gripper control. See [Results & analysis](docs/results.md) for measured diagnostics and the limits of this interpretation.
 
-## Browse the project
+## Code and documentation
 
 | Document / code | Contents |
 |:--|:--|
@@ -64,7 +62,7 @@ The results are consistent with several **hypotheses**, not proven causes: exper
 ```text
 behavior-a2c2/
 ├── README.md
-├── assets/                  # diagrams and results chart
+├── assets/                  # architecture schematic
 ├── docs/                    # method, results, usage, integration
 ├── a2c2/
 │   ├── src/                 # correction head / losses / dataset / online policy
@@ -84,7 +82,7 @@ cd behavior-a2c2
 bash setup.sh --skip-submodule-update --no-behavior-sparse-checkout
 ```
 
-The public [A2C2 dataset repository](https://huggingface.co/datasets/ljc-1222/a2c2_dataset) contains the data artifacts; Task 1 is `picking_up_trash` (`task-0001`). The repo does **not** include trained correction-head checkpoints or recorded rollout media. [Setup & usage](docs/usage.md) documents the download, optional ResNet-18 feature-cache generation, and the training/evaluation entrypoints. Full training and simulator rollout were **not** rerun as part of this presentation cleanup.
+The public [A2C2 dataset repository](https://huggingface.co/datasets/ljc-1222/a2c2_dataset) contains the data artifacts; Task 1 is `picking_up_trash` (`task-0001`). The git repository does **not** bundle trained correction-head weights or rollout videos. The separate [Task 1 ablation artifact page](https://huggingface.co/ljc-1222/a2c2-task0001-ablation) is provided for reference; its individual files and media have not been independently verified in this documentation update. [Setup & usage](docs/usage.md) documents the download, optional ResNet-18 feature-cache generation, and the training/evaluation entrypoints. Full training and simulator rollout were **not** rerun as part of this presentation cleanup.
 
 ## Context, attribution, and team
 

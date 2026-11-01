@@ -6,25 +6,30 @@
 
 OpenPI-Comet generates a chunk of **32 actions** for the R1Pro robot; each executed action contains **23 control dimensions**. A chunk can become stale while the scene changes. Following the [A2C2 method](https://arxiv.org/abs/2509.23224), we hold Comet fixed and train an auxiliary model to correct the single action selected at each execution step.
 
-For a chunk generated at source time `t` and offset `k`:
+For a chunk generated at source time $t$ and executed at offset $k$, the frozen policy supplies a base action chunk $A_t$ and a prefix latent $z_t$. The head observes the latest state $o_{t+k}$ and predicts a correction:
 
-```text
-A_t, z_t = frozen_Comet(o_t, instruction)
-Δa_(t,k) = correction_head(o_(t+k), A_t[k], z_t, instruction, τ(k))
-a_exec   = clip(A_t[k] + λ * Δa_(t,k))
-```
+$$
+(A_t,z_t)=\pi_{\mathrm{Comet}}(o_t,\ell),
+$$
 
-Here, `τ(k)` is a sinusoidal encoding of the position within the chunk; `λ` is the online correction scale (default **1.0**). Clipping occurs after residual addition. Our code implements per-step residual inference on a receding-horizon chunk; **it does not establish real-time latency guarantees or reproduce an asynchronous scheduling benchmark**.
+$$
+\Delta a_{t,k}=f_{\theta}(o_{t+k},a_{t,k}^{\mathrm{base}},z_t,\ell,\tau(k)),
+$$
 
-![Pipeline](../assets/a2c2_pipeline.svg)
+$$
+a_{t+k}^{\mathrm{exec}}=
+\operatorname{clip}\!\left(a_{t,k}^{\mathrm{base}}+\lambda\,\Delta a_{t,k}\right).
+$$
+
+Here $\ell$ is the task instruction, $\tau(k)$ encodes position in the action chunk, and $\lambda$ is the correction scale (the online default is $1$). Clipping occurs after residual addition. This implementation runs per-step residual inference on a receding-horizon chunk; it **does not establish real-time latency guarantees or reproduce an asynchronous scheduling benchmark**. The architecture diagram appears on the [project overview](../README.md).
 
 ## Training data and target alignment
 
 `a2c2/scripts/create_dataset.py` augments BEHAVIOR expert episodes with baseline action chunks and a prefix latent:
 
-- Each source frame `t` receives a frozen-policy chunk `A_t` with 32 actions, a valid-offset mask, and policy timing.
+- Each source frame $t$ receives a frozen-policy chunk $A_t$ with 32 actions, a valid-offset mask, and policy timing.
 - A companion latent parquet stores the mask-pooled output of the COMET/PaliGemma **prefix forward pass**. This is **not** a representation from the action denoising loop.
-- For each valid `(t, k)`, the execution frame is `t+k`; the supervised residual is `a_expert[t+k] - A_t[k]`.
+- For each valid $(t,k)$, the execution frame is $t+k$; the supervised residual is $\Delta a_{t,k}^{*}=a_{t+k}^{\mathrm{expert}}-a_{t,k}^{\mathrm{base}}$.
 
 The dataset builder preserves the original episode metadata and video modalities. The dataset loader samples valid source/offset pairs within each episode. Scripts are configured for **Task 1, `picking_up_trash`, `task-0001`** by default. The serialized model config controls which additional modalities a particular checkpoint expects.
 
@@ -34,7 +39,7 @@ The implementation in [`a2c2/src/model.py`](../a2c2/src/model.py) uses token pro
 
 | Group | Implementation |
 |:--|:--|
-| Base policy | Selected base action, cached prefix latent `z_t` (2048-D), source/execution context |
+| Base policy | Selected base action, cached prefix latent $z_t$ (2048-D), source/execution context |
 | Robot | Proprioception (256-D) and chunk-offset time encoding |
 | Visual | Three RGB camera views; frozen ResNet-18 features or decoded frames |
 | Language | Task instruction represented by token embeddings and a GRU |
@@ -55,11 +60,22 @@ The loss implementation is in [`a2c2/src/loss.py`](../a2c2/src/loss.py). Four av
 | `norm_huber` | Scale-normalized Huber error within each group |
 | `norm_huber_gripw` | Same normalized Huber loss with double weight on the two gripper groups |
 
-For action dimension `j`, the training-split scale is `s_j = max(Q₀.₉₉(a_j) − Q₀.₀₁(a_j), ε)`. With error `e_j = (Δâ_j − Δa*_j) / s_j`, the normalized group objective is
+For each action dimension $j$, a robust scale is estimated from the training split, and the normalized residual error is defined as
 
-```text
-L = Σ_(g∈groups) w_g · mean_(j∈g) ρ(e_j)
-```
+$
+s_j=\max\!\left(Q_{0.99}(a_j)-Q_{0.01}(a_j),\varepsilon\right),
+\qquad
+e_j=\frac{\widehat{\Delta a}_j-\Delta a_j^{*}}{s_j}.
+$
+
+The normalized loss aggregates **group-wise means**:
+
+$
+\mathcal{L}=\sum_{g\in\mathcal{G}} w_g\,
+\frac{1}{|g|}\sum_{j\in g}\rho(e_j).
+$
+
+For normalized MSE, $\rho(e)=e^2$; for the Huber variants, $\rho$ is the Huber penalty with the configured $\delta$.
 
 The six groups are base, torso, left arm, left gripper, right arm and right gripper. Defaults are Huber delta **1.0**, gripper weight **2.0** in the weighted preset, and minimum scale **1e−4**. These are **sums of group means**, not a uniform average over all 23 dimensions.
 
