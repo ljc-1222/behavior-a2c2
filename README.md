@@ -20,11 +20,12 @@ We adapted **Asynchronous Action Chunk Correction (A2C2)** to a frozen **OpenPI-
 - **Closed-loop interface:** integrated a per-step correction wrapper and action-range clipping with BEHAVIOR's evaluation interface.
 - **Loss and rollout analysis:** compared raw MSE, range-normalized MSE, normalized Huber, and gripper-weighted normalized Huber, together with action smoothness and clipping diagnostics.
 
-At execution time, the head predicts a residual for the current chunk action:
+At execution time, the correction head predicts a residual for the current chunk action:
 
-$
-\na_{t+k}^{\mathrm{exec}} = \operatorname{clip}\!\left(a_{t,k}^{\mathrm{base}} + \lambda\,\Delta a_{t,k}\right).
-$
+$$
+a_{t+k}^{\mathrm{exec}} =
+\operatorname{clip}\!\left(a_{t,k}^{\mathrm{base}}+\lambda\,\Delta a_{t,k}\right).
+$$
 
 The base action horizon is **32 steps**, and each robot action has **23 dimensions**. Details of the token-fusion head, losses, and optional input features are in [Method](docs/method.md).
 
