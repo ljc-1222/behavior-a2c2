@@ -299,7 +299,7 @@ def run_smoke() -> None:
             base_policy,
             a2c2_checkpoint=checkpoint,
             a2c2_device="cpu",
-            task_name="tidying_bedroom",
+            task_name="picking_up_trash",
             control_mode="receeding_horizon",
             max_len=3,
         )

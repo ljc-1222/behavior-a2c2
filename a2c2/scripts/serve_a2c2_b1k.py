@@ -36,7 +36,7 @@ class Checkpoint:
 
 @dataclasses.dataclass
 class Default:
-    """Use the workspace default task18 OpenPI-COMET checkpoint."""
+    """Use the workspace default task1 OpenPI-COMET checkpoint."""
 
 
 @dataclasses.dataclass
@@ -44,7 +44,7 @@ class Args:
     """Arguments for the online A2C2 BEHAVIOR websocket server."""
 
     # BEHAVIOR task name used for task prompt lookup.
-    task_name: str = "tidying_bedroom"
+    task_name: str = "picking_up_trash"
 
     # Fallback prompt for the OpenPI policy when the transformed input has no prompt.
     default_prompt: str | None = None
@@ -66,7 +66,7 @@ class Args:
     fine_grained_level: int = 0
 
     # A2C2 RGB/depth + task-language correction-head checkpoint.
-    a2c2_checkpoint: Path = Path("../a2c2/runs/task18_wandb_bs128_w8_bpe4/latest.pt")
+    a2c2_checkpoint: Path = Path("../a2c2/runs/task1_wandb_bs128_w8_bpe4/latest.pt")
     a2c2_device: str = "auto"
     a2c2_image_size: int | None = None
     a2c2_language_instruction: str | None = None
