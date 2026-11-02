@@ -1,6 +1,6 @@
 # Method
 
-[← Project overview](../README.md) · [Results](results.md) · [Usage](usage.md)
+[← Project overview](../README.md) · [Evaluation diagnostics](results.md) · [Usage](usage.md)
 
 ## Motivation and execution path
 
@@ -79,9 +79,8 @@ For normalized MSE, $\rho(e)=e^2$; for the Huber variants, $\rho$ is the Huber p
 
 The six groups are base, torso, left arm, left gripper, right arm and right gripper. Defaults are Huber delta **1.0**, gripper weight **2.0** in the weighted preset, and minimum scale $10^{-4}$. These are **sums of group means**, not a uniform average over all 23 dimensions.
 
-## Evaluation and interpretation
+## Evaluation interfaces
 
-Offline evaluation measures residual, corrected-action, and base-action errors on episode data. Online evaluation runs in OmniGibson with a frozen baseline versus the residual-corrected wrapper. The local Task 1 Q-score comparison and diagnostic definitions are in [Results](results.md); a reduced offline error is not evidence of task-level improvement.
+Offline evaluation measures residual, corrected-action, and base-action errors on episode data. Online evaluation compares the frozen baseline with the residual-corrected wrapper in OmniGibson.
 
-The [Task 1 analysis](results.md) connects the observed offline–online gap to candidate mechanisms and proposed follow-up experiments. Those proposals have not yet been evaluated.
-
+See the [Task 1 results](../README.md#task-1-results) for the primary scores, [analysis and next steps](../README.md#analysis-and-next-steps) for the proposed explanations, and [evaluation diagnostics](results.md) for the complete control measurements and metric definitions.

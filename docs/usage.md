@@ -2,7 +2,7 @@
 
 [← Project overview](../README.md) · [Method](method.md) · [Integration](integration.md)
 
-This page describes the **Task 1 (`picking_up_trash`)** workspace. BEHAVIOR/OmniGibson requires a compatible Linux GPU environment and simulator assets. These commands document the current interfaces; they are not recovered exact launch commands for the June 2026 runs.
+This page describes the **Task 1 (`picking_up_trash`)** workspace: environment setup, local correction data, training, and offline/online evaluation. BEHAVIOR/OmniGibson requires a compatible Linux GPU environment and simulator assets.
 
 ## 1. Checkout and dependencies
 
@@ -29,36 +29,46 @@ source /path/to/conda/etc/profile.d/conda.sh
 conda activate behavior
 ```
 
-## 2. Download the Task 1 A2C2 dataset
+## 2. Prepare local Task 1 correction data
 
-The dataset is released separately at [Hugging Face](https://huggingface.co/datasets/ljc-1222/a2c2_dataset). It contains expert demonstration metadata, videos, base policy chunks and prefix latents.
+Training requires a local correction dataset containing expert actions and observations, frozen-policy chunks, valid-offset masks, and prefix latents. Set the dataset root from the workspace shell:
 
 ```bash
-python -m pip install huggingface_hub pyarrow tqdm
-python a2c2/scripts/create_dataset.py \
-  --download-variant picking_up_trash_pi05-b1kpt50-cs32_h32_v1
+export DATASET="$B1K_ROOT/a2c2_dataset/task1"
 ```
 
-Expected selected root:
+Expected layout:
 
 ```text
-a2c2_dataset/picking_up_trash_pi05-b1kpt50-cs32_h32_v1/
+$DATASET/
   data/task-0001/
   latent/data/task-0001/
   videos/task-0001/
   meta/
 ```
 
-The build path (`create_dataset.py --build --task-index 1`) instead regenerates chunks/latents from BEHAVIOR demonstrations using a frozen Comet checkpoint. This requires both patched submodules and the OpenPI environment; download mode is the lower-effort route.
+The existing builder constructs this dataset from BEHAVIOR expert episodes and a frozen Comet checkpoint. It requires the patched OpenPI environment, source demonstrations, and baseline checkpoint prepared during setup:
+
+```bash
+(
+  cd "$B1K_ROOT/openpi-comet"
+  uv run --no-sync ../a2c2/scripts/create_dataset.py \
+    --build \
+    --task-index 1 \
+    --output-root "$DATASET"
+)
+```
+
+The builder's `--source-root` and `--checkpoint-dir` flags select non-default local inputs. Dataset construction generates base chunks and prefix latents; it does not train the VLA or the correction head. An existing dataset with the same schema can be used instead.
 
 ## 3. Generate the frozen RGB feature cache
 
 Training defaults to `--rgb-cache-kind resnet18-features` and expects a local ResNet-18 feature cache. If the selected dataset root does not already contain this cache, generate it before training:
 
 ```bash
-DATASET=a2c2_dataset/picking_up_trash_pi05-b1kpt50-cs32_h32_v1
 python a2c2/scripts/mp4_to_parquet.py "$DATASET/videos/task-0001" \
   --output-kind resnet18-features \
+  --output-root "$DATASET/rgb_features_resnet18/task-0001" \
   --image-size 224 \
   --no-use-depth
 ```
@@ -69,7 +79,7 @@ Depth remains a separate video input controlled by `--use-depth` / `--no-use-dep
 
 ## 4. Train a correction head
 
-The following is a **Task 1 example** using the best-performing loss *from the original comparison*, not a promise of reproducing that exact historical checkpoint:
+The following Task 1 example uses normalized MSE, the strongest correction variant in the reported comparison:
 
 ```bash
 python a2c2/scripts/train.py \
@@ -81,7 +91,7 @@ python a2c2/scripts/train.py \
   --seed 42
 ```
 
-Change `--loss-preset` to one of `raw_mse`, `norm_mse`, `norm_huber`, or `norm_huber_gripw` for the other objectives. The script saves its model config, selected CLI arguments and action statistics in the checkpoint; use these values when interpreting or loading a particular run. This example uses current code defaults and is **not a recovered exact command for the historical experiment**.
+Change `--loss-preset` to one of `raw_mse`, `norm_mse`, `norm_huber`, or `norm_huber_gripw` for the other objectives. The script saves its model config, selected CLI arguments and action statistics in the checkpoint; use these values when interpreting or loading a particular run.
 
 ## 5. Offline evaluation
 
@@ -103,7 +113,7 @@ This *offline* command measures action-regression error; it does not run the sim
 Online rollout needs the full OpenPI-Comet and BEHAVIOR/OmniGibson environments, the frozen Comet checkpoint, a trained A2C2 checkpoint, and BEHAVIOR task instances. Run the base policy server from `openpi-comet/`, for example:
 
 ```bash
-cd openpi-comet
+cd "$B1K_ROOT/openpi-comet"
 uv run --no-sync ../a2c2/scripts/serve_a2c2_b1k.py \
   --task-name=picking_up_trash \
   --a2c2-checkpoint=../a2c2/runs/task1_norm_mse/latest.pt \
@@ -112,10 +122,10 @@ uv run --no-sync ../a2c2/scripts/serve_a2c2_b1k.py \
   --policy.dir=./checkpoints/pi05-b1kpt50-cs32
 ```
 
-In the BEHAVIOR environment, use the project's websocket evaluator (the default WebSocket host must match the server). A2C2 requires the wrapper exposing depth/task-info when enabled:
+In a separate shell with the BEHAVIOR environment active, use the project's websocket evaluator (the default WebSocket host must match the server). A2C2 requires the wrapper exposing depth/task-info when enabled:
 
 ```bash
-cd BEHAVIOR-1K
+cd "$B1K_ROOT/BEHAVIOR-1K"
 xvfb-run -a python OmniGibson/omnigibson/learning/eval.py \
   policy=websocket \
   task.name=picking_up_trash \
@@ -129,7 +139,6 @@ For a **frozen baseline** comparison, serve the uncorrected `openpi-comet/script
 
 ## Operational limits
 
-- The [Task 1 evaluation archive](https://huggingface.co/ljc-1222/a2c2-task0001-ablation/tree/669e984b98b7828c72e805be76e97d767b08b8dd) hosts online metrics, summaries, logs, and rollout videos. It does not provide a downloadable correction-head checkpoint; train a head before running the checkpoint-dependent commands above. See [Results](results.md#published-evaluation-artifacts) for the artifact index.
-- The project does not promise exact package/platform compatibility with future versions of OpenPI, OmniGibson or CUDA.
+- Checkpoint-dependent commands require a locally trained or otherwise available correction-head checkpoint. Training saves `latest.pt` and numbered checkpoints under the selected output directory.
+- The examples use current code defaults and are not recovered exact commands for the historical runs. Keep dataset split settings and checkpoint input modalities consistent across training and evaluation.
 - `a2c2/scripts/test_online_eval.py` is an integration smoke script requiring the fork dependencies. Training, checkpoint loading, GPU inference, and simulator rollout have not been revalidated for this documentation revision.
-
