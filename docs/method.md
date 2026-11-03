@@ -21,14 +21,14 @@ a_{t+k}^{\mathrm{exec}}=
 \mathrm{clip}\left(a_{t,k}^{\mathrm{base}}+\lambda\,\Delta a_{t,k}\right).
 ```
 
-Here $\ell$ is the task instruction, $\tau(k)$ encodes position in the action chunk, and $\lambda$ is the correction scale (the online default is $1$). Clipping occurs after residual addition. This implementation runs per-step residual inference on a receding-horizon chunk; it **does not establish real-time latency guarantees or reproduce an asynchronous scheduling benchmark**. The architecture diagram appears on the [project overview](../README.md).
+Here $\ell$ is the task instruction, $\tau(k)$ encodes position in the action chunk, and $\lambda$ is the correction scale (the online default is $1$). Clipping occurs after residual addition. The wrapper refreshes base chunks synchronously and predicts a residual for each executed action. The architecture diagram appears on the [project overview](../README.md).
 
 ## Training data and target alignment
 
 `a2c2/scripts/create_dataset.py` augments BEHAVIOR expert episodes with baseline action chunks and a prefix latent:
 
 - Each source frame $t$ receives a frozen-policy chunk $A_t$ with 32 actions, a valid-offset mask, and policy timing.
-- A companion latent parquet stores the mask-pooled output of the COMET/PaliGemma **prefix forward pass**. This is **not** a representation from the action denoising loop.
+- A companion latent parquet stores the mask-pooled output of the COMET/PaliGemma **prefix forward pass**.
 - For each valid $(t,k)$, the execution frame is $t+k$; the supervised residual is $\Delta a_{t,k}^{*}=a_{t+k}^{\mathrm{expert}}-a_{t,k}^{\mathrm{base}}$.
 
 The dataset builder preserves the original episode metadata and video modalities. The dataset loader samples valid source/offset pairs within each episode. Scripts are configured for **Task 1, `picking_up_trash`, `task-0001`** by default. The serialized model config controls which additional modalities a particular checkpoint expects.
@@ -45,7 +45,7 @@ The implementation in [`a2c2/src/model.py`](../a2c2/src/model.py) uses token pro
 | Language | Task instruction represented by token embeddings and a GRU |
 | Optional or config-dependent | Depth cameras, camera-relative poses, task-info vector, policy inference timing |
 
-RGB and task language are required by current checkpoint validation; **depth is configurable**, not universally required. The training CLI defaults to depth, camera-relative poses, task information and inference timing enabled. Exact enabled features must be read from a saved checkpoint's configuration rather than inferred from the filename.
+Checkpoint validation requires RGB and task language. The saved configuration specifies the optional inputs; the training CLI enables depth, camera-relative poses, task information and inference timing by default.
 
 The frozen-base hooks live in the [OpenPI-Comet fork](https://github.com/ljc-1222/openpi-comet). [Integration notes](integration.md) identify the relevant entrypoints.
 
@@ -77,7 +77,7 @@ The normalized loss aggregates **group-wise means**:
 
 For normalized MSE, $\rho(e)=e^2$; for the Huber variants, $\rho$ is the Huber penalty with the configured $\delta$.
 
-The six groups are base, torso, left arm, left gripper, right arm and right gripper. Defaults are Huber delta **1.0**, gripper weight **2.0** in the weighted preset, and minimum scale $10^{-4}$. These are **sums of group means**, not a uniform average over all 23 dimensions.
+The six groups are base, torso, left arm, left gripper, right arm and right gripper. Defaults are Huber delta **1.0**, gripper weight **2.0** in the weighted preset, and minimum scale $10^{-4}$. Each normalized preset sums the six group-mean losses.
 
 ## Evaluation interfaces
 

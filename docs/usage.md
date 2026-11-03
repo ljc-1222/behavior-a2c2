@@ -104,9 +104,9 @@ python a2c2/scripts/eval.py \
   --seed 42
 ```
 
-The separate `eval.py` currently regenerates the episode split using the dataset order, validation ratio and seed. Set `--seed`, `--val-ratio` and `--max-episodes` consistently with the training run; mismatching split settings risks evaluating training episodes. If the validation set is empty, evaluation fails rather than silently evaluating training data under the `val` label.
+Evaluation reconstructs the episode split from dataset order, seed, validation ratio and maximum episode count. Use the training values for `--seed`, `--val-ratio` and `--max-episodes`. Evaluation rejects an empty validation split.
 
-This *offline* command measures action-regression error; it does not run the simulator or compute the BEHAVIOR Q-score.
+This offline command measures action-regression error. BEHAVIOR Q-scores come from online simulator rollouts.
 
 ## 6. Online Task 1 evaluation
 
@@ -137,8 +137,7 @@ xvfb-run -a python OmniGibson/omnigibson/learning/eval.py \
 
 For a **frozen baseline** comparison, serve the uncorrected `openpi-comet/scripts/serve_b1k.py` and select `omnigibson.learning.wrappers.RGBWrapper` in BEHAVIOR. The online diagnostic JSON is recorded as `a2c2_online` in the patched evaluator. Use the same task instances, seed, and chunk length for baseline and corrected-policy comparisons.
 
-## Operational limits
+## Checkpoint and integration notes
 
 - Checkpoint-dependent commands require a locally trained or otherwise available correction-head checkpoint. Training saves `latest.pt` and numbered checkpoints under the selected output directory.
-- The examples use current code defaults and are not recovered exact commands for the historical runs. Keep dataset split settings and checkpoint input modalities consistent across training and evaluation.
-- `a2c2/scripts/test_online_eval.py` is an integration smoke script requiring the fork dependencies. Training, checkpoint loading, GPU inference, and simulator rollout have not been revalidated for this documentation revision.
+- `a2c2/scripts/test_online_eval.py` is an integration smoke script requiring the fork dependencies.

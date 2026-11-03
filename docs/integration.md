@@ -19,11 +19,10 @@ The repository's own [`a2c2/src/online.py`](../a2c2/src/online.py) consumes thos
 
 The BEHAVIOR fork includes its A2C2 observation wrapper and [online metrics accumulator](https://github.com/ljc-1222/BEHAVIOR-1K/blob/37a4910a2545f1d91ecf7eff45a603c420ba98c6/OmniGibson/omnigibson/learning/a2c2_online_metrics.py). The wrapper supplies modalities and task information expected by the selected A2C2 model config; the evaluator stores residual, action clipping, gripper timing and smoothness data in per-rollout JSON.
 
-Some model configurations enable depth, camera-relative poses, privileged task information or inference timing. These must not be described as if all variants use identical input sets. Consult the saved checkpoint's config for the enabled features.
+The saved checkpoint configuration specifies the enabled depth, camera-relative pose, privileged task-info and inference-timing inputs.
 
 ## Source and attribution
 
 The underlying [Comet project](https://github.com/mli0603/openpi-comet) was **second on the official 2025 BEHAVIOR held-out-test leaderboard** (overall Q-score **0.2514**); its competition score is distinct from this repository's Task 1-only score. The A2C2 mechanism originates from [Sendai et al.](https://arxiv.org/abs/2509.23224). The [BEHAVIOR-1K simulator](https://github.com/StanfordVL/BEHAVIOR-1K) and [OpenPI](https://github.com/Physical-Intelligence/openpi) are upstream projects.
 
 The fork submodules preserve their respective upstream licenses. The outer repository currently has no separate root license. Dataset, model-weight, and simulator-asset terms are determined by their respective sources.
-
