@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "video_folder",
         type=Path,
-        help="Path to a task video folder, e.g. dataset/videos/task-0018.",
+        help="Path to a task video folder, e.g. dataset/videos/task-0001.",
     )
     parser.add_argument(
         "--output-root",

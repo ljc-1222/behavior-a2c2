@@ -34,8 +34,8 @@ from loss import A2C2LossConfig, A2C2ResidualLoss, LOSS_PRESETS, loss_config_to_
 from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig  # noqa: E402
 
 
-DEFAULT_TASK18_DATASET_ROOT = Path("a2c2_dataset/tidying_bedroom_pi05-b1kpt50-cs32_h32_v1")
-DEFAULT_TASK18_TASK_DIR = "task-0018"
+DEFAULT_TASK1_DATASET_ROOT = Path("a2c2_dataset/picking_up_trash_pi05-b1kpt50-cs32_h32_v1")
+DEFAULT_TASK1_TASK_DIR = "task-0001"
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,12 +43,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=DEFAULT_TASK18_DATASET_ROOT,
-        help="Dataset root. Defaults to the task18 A2C2 dataset under the b1k workspace.",
+        default=DEFAULT_TASK1_DATASET_ROOT,
+        help="Dataset root. Defaults to the task1 A2C2 dataset under the b1k workspace.",
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("a2c2/runs/task18"))
-    parser.add_argument("--task-dir", default=DEFAULT_TASK18_TASK_DIR, help="Task directory filter.")
-    parser.add_argument("--steps", type=int, default=400_000)
+    parser.add_argument("--output-dir", type=Path, default=Path("a2c2/runs/task1"))
+    parser.add_argument("--task-dir", default=DEFAULT_TASK1_TASK_DIR, help="Task directory filter.")
+    parser.add_argument("--steps", type=int, default=200_000)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--batches-per-episode", type=int, default=1)

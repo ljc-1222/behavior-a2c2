@@ -28,8 +28,8 @@ from loss import A2C2ResidualLoss, loss_config_from_dict  # noqa: E402
 from model import A2C2CorrectionHead, A2C2CorrectionHeadConfig, config_from_checkpoint_payload  # noqa: E402
 
 
-DEFAULT_TASK18_DATASET_ROOT = Path("a2c2_dataset/tidying_bedroom_pi05-b1kpt50-cs32_h32_v1")
-DEFAULT_TASK18_TASK_DIR = "task-0018"
+DEFAULT_TASK1_DATASET_ROOT = Path("a2c2_dataset/picking_up_trash_pi05-b1kpt50-cs32_h32_v1")
+DEFAULT_TASK1_TASK_DIR = "task-0001"
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,11 +37,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=DEFAULT_TASK18_DATASET_ROOT,
-        help="Dataset root. Defaults to the task18 A2C2 dataset under the b1k workspace.",
+        default=DEFAULT_TASK1_DATASET_ROOT,
+        help="Dataset root. Defaults to the task1 A2C2 dataset under the b1k workspace.",
     )
     parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--task-dir", default=DEFAULT_TASK18_TASK_DIR, help="Task directory filter.")
+    parser.add_argument("--task-dir", default=DEFAULT_TASK1_TASK_DIR, help="Task directory filter.")
     parser.add_argument("--split", choices=("train", "val", "all"), default="val")
     parser.add_argument("--val-ratio", type=float, default=0.05)
     parser.add_argument("--max-episodes", type=int, default=None)
@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--batches-per-episode", type=int, default=1)
-    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument("--seed", type=int, default=42, help="Use the training split seed (default: 42).")
     parser.add_argument("--device", default="auto")
     parser.add_argument(
         "--image-size",
@@ -178,7 +178,9 @@ def main() -> None:
     if args.split == "train":
         eval_pairs = train_pairs
     elif args.split == "val":
-        eval_pairs = val_pairs if val_pairs else train_pairs
+        if not val_pairs:
+            raise ValueError("No validation episodes for this split; refusing to evaluate training episodes as val.")
+        eval_pairs = val_pairs
     else:
         eval_pairs = train_pairs + val_pairs
 
